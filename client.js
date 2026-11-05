@@ -679,6 +679,8 @@ window.__ModuleLoader__.load({
           open: guideOpen,
           onToggle: function () { setGuidePinned(!guideOpen); },
         }),
+        // 子代理模型设置：面板内直接可配（插件详情页也有同一表单）
+        h(AgentModelConfig, { key: 'cfg', view: 'page' }),
         h('div', { className: 'dsh-subagent-bridge-page-list', role: 'list', 'aria-label': t('title') },
           taskListChildren(state, t),
         ),
