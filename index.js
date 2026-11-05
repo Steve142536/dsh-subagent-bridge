@@ -1199,6 +1199,9 @@ export function apply(ctx, config) {
         });
       case 'tools/list':
         return jsonRpcResult(id, { tools: TOOLS });
+      case 'ping':
+        // MCP 标准探活请求，规范要求回空结果对象（缺失会让严格客户端断连）
+        return jsonRpcResult(id, {});
       case 'tools/call': {
         const name = message.params?.name;
         if (typeof name !== 'string') {
@@ -1250,24 +1253,27 @@ export function apply(ctx, config) {
     if (res.destroyed) return;
 
     if (Array.isArray(parsed)) {
-      // 批处理：逐个处理、逐个给响应（通知不产生响应），数组形式返回
+      // 批处理：并发处理、逐条给响应（通知不产生响应），数组形式返回。
+      // 并行是刻意的：wait_task 可以阻塞 600 秒，串行会拖住同批的
+      // start_task/list_tasks 等瞬时消息。
       if (parsed.length === 0) {
         sendJson(res, 400, jsonRpcError(null, -32600, 'Invalid Request: empty batch'));
         return;
       }
-      const responses = [];
-      for (const message of parsed) {
-        try {
-          const response = await processMessage(message);
-          if (response) responses.push(response);
-        } catch (err) {
-          const id =
-            message && typeof message === 'object' && !Array.isArray(message)
-              ? message.id ?? null
-              : null;
-          responses.push(jsonRpcError(id, -32603, 'Internal error'));
-        }
-      }
+      const results = await Promise.all(
+        parsed.map(async (message) => {
+          try {
+            return await processMessage(message);
+          } catch (err) {
+            const id =
+              message && typeof message === 'object' && !Array.isArray(message)
+                ? message.id ?? null
+                : null;
+            return jsonRpcError(id, -32603, 'Internal error');
+          }
+        }),
+      );
+      const responses = results.filter(Boolean);
       if (responses.length === 0) {
         sendNoContent(res, 202); // 全是通知
         return;
