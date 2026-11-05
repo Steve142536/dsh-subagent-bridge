@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="DSH Subagent Bridge">
+  <!-- 对话气泡：代表 DSH 主会话 -->
+  <path d="M14 8 H46 Q54 8 54 16 V28 Q54 36 46 36 H28 L16 48 V36 H14 Q6 36 6 28 V16 Q6 8 14 8 Z"
+        fill="none" stroke="#4C8DFF" stroke-width="4" stroke-linejoin="round"/>
+  <!-- 分支箭头：任务从主会话分支给子代理 -->
+  <path d="M24 14 V30" fill="none" stroke="#4C8DFF" stroke-width="4" stroke-linecap="round"/>
+  <path d="M24 22 H36 M31 16.5 L37 22 L31 27.5" fill="none" stroke="#4C8DFF" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
