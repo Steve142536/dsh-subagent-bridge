@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 // ---------- 常量 ----------
 const PROTOCOL_VERSION_DEFAULT = '2025-06-18';
-const SERVER_INFO = { name: 'dsh-subagent-bridge', version: '1.0.0' };
+const SERVER_INFO = { name: 'dsh-subagent-bridge', version: '1.2.0' };
 const MCP_INSTRUCTIONS =
   'Delegate tasks to DSH subagents. Start tasks and wait for results; use cancel_task to cancel, or continue_task for a completed session. Running tasks cannot receive messages.';
 const BODY_LIMIT = 1024 * 1024;   // MCP 请求体上限 1MB，超限回 413
