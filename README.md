@@ -55,6 +55,10 @@ cd dsh-subagent-bridge
 
 3. 在 Codex 会话里说"把这个任务委托给 DSH 子代理"，模型会调用 `start_task`，再用 `wait_task` 轮询直到拿到结果。任务指令必须自包含（子代理看不到 Codex 侧对话，所需路径和上下文都要写进 `task`）。
 
+### 端口变化与自动同步
+
+DSH 的 web 端口每次启动都会变化，会让 Codex 里注册的 MCP 地址失效。桥接插件内置**端点自动同步**：插件激活、web 端口就绪后，自动把 `~/.codex/config.toml` 中 `[mcp_servers.dsh-subagent]` 段的 `url` 刷新为当前端点（该段不存在时自动追加，等效完成首次注册；本机没有 Codex 配置则跳过）。因此**重启 DSH 后无需手动重新注册**，新开一个 Codex 会话即可使用。设置对话框的"DSH 子代理"分区会显示每次同步的状态（`已写入当前端点` / `端点已是最新` 等）。
+
 ## 配置字段（cordis.patch.yml 的 config）
 
 | 字段 | 默认值 | 说明 |

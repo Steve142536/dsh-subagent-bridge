@@ -130,6 +130,14 @@ window.__ModuleLoader__.load({
         installHint: '提示词已自动嵌入当前桥接地址，助手会按步骤代办：',
         installPrompt: '请把 DSH 子代理桥接接入 Codex，端点：{url}\n一、注册 MCP 服务器：优先运行 codex mcp add dsh-subagent --url {url}；若 codex 不在 PATH，用桌面端自带 CLI（%LOCALAPPDATA%\\OpenAI\\Codex\\bin\\<版本号>\\codex.exe）执行同样命令；仍不行则直接编辑 ~/.codex/config.toml 追加以下两行：\n[mcp_servers.dsh-subagent]\nurl = "{url}"\n完成后用 codex mcp get dsh-subagent 验证 enabled: true。\n二、在 ~/.codex/AGENTS.md 末尾追加以下使用规则（文件不存在则创建）：\n## DSH 子代理使用规则\n- 所有任务请使用 DSH 子代理，主代理负责检查和验收。\n- 子代理没有生成图片的能力，所有生成图像的能力交给主代理（生成图像的任务由主代理自己完成）。\n- 委托时把任务描述写全（文件路径、上下文、验收标准写进 task）；验收不通过时给出具体修改意见，再次委托子代理修改。\n三、两步完成后告知用户：新开 Codex 会话即可使用。',
         connectHint: '备选：手动在 Codex 终端执行注册命令：',
+        syncTitle: 'Codex 端点自动同步',
+        syncNote: 'DSH 每次启动端口都会变化；桥接启动时会自动把当前端点写入 Codex 配置（~/.codex/config.toml），因此重启 DSH 后无需手动重新注册，新开 Codex 会话即可使用。',
+        syncPending: '等待 DSH 端口就绪…',
+        syncUnchanged: '端点已是最新',
+        syncUpdated: '已写入当前端点',
+        syncCreated: '已自动注册到 Codex',
+        syncSkipped: '未找到 ~/.codex/config.toml（本机未安装 Codex，已跳过）',
+        syncFailed: '同步失败',
         copy: '复制',
         copied: '已复制',
         copyFailed: '复制失败',
@@ -176,6 +184,14 @@ window.__ModuleLoader__.load({
         installHint: 'The current bridge URL is already embedded; the assistant handles the rest:',
         installPrompt: 'Please wire the DSH subagent bridge into Codex, endpoint: {url}\n1. Register the MCP server: run codex mcp add dsh-subagent --url {url}; if codex is not on PATH, use the desktop-bundled CLI (%LOCALAPPDATA%\\OpenAI\\Codex\\bin\\<version>\\codex.exe) with the same command; otherwise edit ~/.codex/config.toml and append:\n[mcp_servers.dsh-subagent]\nurl = "{url}"\nVerify with codex mcp get dsh-subagent (enabled: true).\n2. Append the following usage rules to ~/.codex/AGENTS.md (create the file if missing):\n## DSH subagent usage rules\n- Use DSH subagents for all tasks; the main agent checks and accepts the results.\n- Subagents cannot generate images: all image generation stays with the main agent.\n- Write self-contained task descriptions (paths, context, acceptance criteria in task); on rejection, give concrete revision notes and delegate again.\n3. When both steps are done, tell the user a new Codex session picks it up.',
         connectHint: 'Fallback: run the registration command in a Codex terminal:',
+        syncTitle: 'Automatic Codex endpoint sync',
+        syncNote: "The DSH port changes on every start; the bridge writes the current endpoint into the Codex config (~/.codex/config.toml) at startup, so after restarting DSH you don't need to re-register — just open a new Codex session.",
+        syncPending: 'Waiting for the DSH port to be ready…',
+        syncUnchanged: 'Endpoint already up to date',
+        syncUpdated: 'Current endpoint written',
+        syncCreated: 'Registered into Codex automatically',
+        syncSkipped: '~/.codex/config.toml not found (Codex not installed; skipped)',
+        syncFailed: 'Sync failed',
         copy: 'Copy',
         copied: 'Copied',
         copyFailed: 'Copy failed',
@@ -444,6 +460,7 @@ window.__ModuleLoader__.load({
     // 复制成功 2 秒后回弹为"复制"。
     function ConnectHint({ t }) {
       const [mcpUrl, setMcpUrl] = React.useState('');
+      const [syncState, setSyncState] = React.useState(null);
       const [copyStates, setCopyStates] = React.useState({ cmd: 'copy', prompt: 'copy' });
       const timerRef = React.useRef({});
 
@@ -456,8 +473,12 @@ window.__ModuleLoader__.load({
             return res.json();
           })
           .then(function (data) {
-            if (alive && data && typeof data.mcpUrl === 'string' && data.mcpUrl) {
+            if (!alive || !data) return;
+            if (typeof data.mcpUrl === 'string' && data.mcpUrl) {
               setMcpUrl(data.mcpUrl);
+            }
+            if (data.codexSync && typeof data.codexSync === 'object') {
+              setSyncState(data.codexSync);
             }
           })
           .catch(function () { /* info 拿不到就只显示说明文字，保持安静 */ });
@@ -532,6 +553,23 @@ window.__ModuleLoader__.load({
             copyButton(command, 'cmd'),
           ),
         );
+      }
+      // 端点自动同步：说明 + 当前状态（来自 /info 的 codexSync）
+      body.push(h('div', { key: 'sync-note', className: 'dsh-subagent-bridge-connect-hint' }, t('syncNote')));
+      if (syncState) {
+        const statusText = {
+          created: t('syncCreated'),
+          updated: t('syncUpdated'),
+          unchanged: t('syncUnchanged'),
+          skipped: t('syncSkipped'),
+          failed: t('syncFailed') + (syncState.lastError ? '：' + syncState.lastError : ''),
+          pending: t('syncPending'),
+        };
+        body.push(h('div', {
+          key: 'sync-status',
+          className: 'dsh-subagent-bridge-connect-hint',
+          title: safeText(syncState.configPath),
+        }, t('syncTitle') + '：' + (statusText[syncState.status] || safeText(syncState.status))));
       }
       return h('div', { className: 'dsh-subagent-bridge-connect' }, body);
     }

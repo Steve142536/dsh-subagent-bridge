@@ -52,6 +52,8 @@ const userPatchPath = path.join(
   'cordis.patch.yml',
 );
 const configFilePath = path.join(process.env.USERPROFILE ?? '', '.dsh', 'subagent-bridge.config.json');
+// Codex CLI 的全局配置；不存在视为本机未安装 Codex，端点同步自动跳过
+const codexConfigPath = path.join(os.homedir(), '.codex', 'config.toml');
 
 function readUserConfig() {
   try {
@@ -372,6 +374,96 @@ export function apply(ctx, config) {
   if (!webServer || typeof webServer.register !== 'function') {
     throw new Error('dsh-subagent-bridge requires the webServer service (inject: [webServer])');
   }
+
+  // ---------- Codex 端点自动同步 ----------
+  // DSH webserver 端口每次启动都会变，Codex 里注册的 MCP URL 会随之失效。
+  // webServer 就绪后自动把 ~/.codex/config.toml 的 [mcp_servers.dsh-subagent]
+  // 段刷新为当前端点；段不存在时自动追加（等效替用户执行 codex mcp add）。
+  // 只改动这一段的 url 行，文件其余内容不碰；本机没有 Codex 配置则静默跳过。
+  const codexSync = { status: 'pending', configPath: codexConfigPath, lastError: null };
+
+  function syncCodexConfig(origin) {
+    try {
+      const url = origin + routePath;
+      const urlLine = `url = "${url}"`;
+      let text;
+      try {
+        text = fs.readFileSync(codexConfigPath, 'utf8');
+      } catch {
+        codexSync.status = 'skipped'; // 没有 ~/.codex/config.toml：本机未装 Codex
+        return;
+      }
+      const lines = text.split(/\r?\n/);
+      const sectionRe = /^\s*\[mcp_servers\.dsh-subagent\]\s*$/;
+      let sectionIndex = -1;
+      for (let i = 0; i < lines.length; i++) {
+        if (sectionRe.test(lines[i])) {
+          sectionIndex = i;
+          break;
+        }
+      }
+      if (sectionIndex === -1) {
+        // 段不存在：文件尾追加（先去掉结尾多余空行，再保证一个空行分隔）
+        while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
+        lines.push('', '[mcp_servers.dsh-subagent]', urlLine, '');
+        fs.writeFileSync(codexConfigPath, lines.join('\n'), 'utf8');
+        codexSync.status = 'created';
+        return;
+      }
+      // 段内找 url 行（扫到下一个段头或 EOF 为止）
+      let urlIndex = -1;
+      for (let i = sectionIndex + 1; i < lines.length; i++) {
+        if (/^\s*\[/.test(lines[i])) break; // 进入下一段
+        if (/^\s*url\s*=/.test(lines[i])) {
+          urlIndex = i;
+          break;
+        }
+      }
+      if (urlIndex === -1) {
+        lines.splice(sectionIndex + 1, 0, urlLine); // 段内没有 url：插到段头后
+        fs.writeFileSync(codexConfigPath, lines.join('\n'), 'utf8');
+        codexSync.status = 'updated';
+        return;
+      }
+      if (lines[urlIndex].trim() === urlLine) {
+        codexSync.status = 'unchanged'; // 已指向当前端点
+        return;
+      }
+      lines[urlIndex] = urlLine;
+      fs.writeFileSync(codexConfigPath, lines.join('\n'), 'utf8');
+      codexSync.status = 'updated';
+    } catch (err) {
+      codexSync.status = 'failed';
+      codexSync.lastError = String(err?.message ?? err);
+    }
+  }
+
+  // webServer 监听是异步的：就绪前 getOrigin 拿不到端口。就绪轮询（每秒一次、
+  // 最多 60 秒），拿到端口立即同步一次 Codex 配置；失败不影响其他功能。
+  ctx.effect(() => {
+    let tries = 0;
+    const timer = setInterval(() => {
+      if (disposed) {
+        clearInterval(timer);
+        return;
+      }
+      let origin = '';
+      try {
+        origin = webServer.getOrigin();
+      } catch {
+        // 尚未就绪，下一轮再试
+      }
+      if (origin) {
+        clearInterval(timer);
+        syncCodexConfig(origin);
+      } else if (++tries >= 60) {
+        clearInterval(timer);
+        codexSync.status = 'failed';
+        codexSync.lastError = 'webServer origin not ready within 60s';
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  });
 
   // ---------- 任务存储与调度 ----------
   const tasks = new Map();   // id -> 任务记录（插入序 ≈ 创建序）
@@ -1100,6 +1192,7 @@ export function apply(ctx, config) {
               (t) => t.status === 'queued' || t.status === 'running',
             ).length,
             dshReady: Boolean(resolveLauncher()),
+            codexSync,
           });
           return;
         }
