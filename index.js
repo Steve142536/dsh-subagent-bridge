@@ -366,9 +366,16 @@ export function apply(ctx, config) {
     const n = Math.floor(Number(value));
     return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : fallback;
   };
-  const maxConcurrent = clampInt(config?.maxConcurrent, 4, 1, 64);
-  const maxTaskSeconds = clampInt(config?.maxTaskSeconds, 1800, 1, 7 * 24 * 3600);
-  const historyLimit = clampInt(config?.historyLimit, 50, 1, 1000);
+  // ---------- 运行限额（设置页可改、保存后热生效） ----------
+  // 优先级：~/.dsh/subagent-bridge.config.json 的用户设置 > 内置默认。
+  // 不再读取 patch config 里的 maxConcurrent/maxTaskSeconds/historyLimit
+  // （那三个字段已废弃，残留值无害）。默认值：并发 8、单任务 1 小时、历史 200 条。
+  const clampLimits = (raw) => ({
+    maxConcurrent: clampInt(raw?.maxConcurrent, 8, 1, 64),
+    maxTaskSeconds: clampInt(raw?.maxTaskSeconds, 3600, 60, 7 * 24 * 3600),
+    historyLimit: clampInt(raw?.historyLimit, 200, 10, 1000),
+  });
+  let limits = clampLimits(readUserConfig());
 
   const webServer = ctx.webServer; // 由 patch 行的 inject: [webServer] 注入
   if (!webServer || typeof webServer.register !== 'function') {
@@ -552,7 +559,7 @@ export function apply(ctx, config) {
     return payload;
   }
 
-  // 历史裁剪：终态任务超过 historyLimit 时按创建时间删最旧（不动 queued/running）
+  // 历史裁剪：终态任务超过 limits.historyLimit 时按创建时间删最旧（不动 queued/running）
   function trimHistory() {
     const finished = [...tasks.values()]
       .filter(
@@ -560,7 +567,7 @@ export function apply(ctx, config) {
           t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled',
       )
       .sort((a, b) => a.createdAtMs - b.createdAtMs);
-    let excess = finished.length - historyLimit;
+    let excess = finished.length - limits.historyLimit;
     for (const t of finished) {
       if (excess-- <= 0) break;
       tasks.delete(t.id);
@@ -697,7 +704,7 @@ export function apply(ctx, config) {
       } catch {
         // 进程可能已退出
       }
-    }, maxTaskSeconds * 1000);
+    }, limits.maxTaskSeconds * 1000);
 
     // stdout：--json 模式逐行输出 JSON 事件，坏行跳过
     const rl = readline.createInterface({ input: child.stdout });
@@ -774,7 +781,7 @@ export function apply(ctx, config) {
       if (t.timedOut) {
         finishRunning(t, 'failed', {
           error:
-            `task exceeded maxTaskSeconds (${maxTaskSeconds}s)` +
+            `task exceeded maxTaskSeconds (${limits.maxTaskSeconds}s)` +
             (t.stderrTail ? `; ${t.stderrTail}` : ''),
         });
       } else if (code === 0 && t.gotFinal && !t.eventError) {
@@ -798,7 +805,7 @@ export function apply(ctx, config) {
     if (launching) return;
     launching = true;
     try {
-      while (!disposed && running < maxConcurrent && queue.length > 0) {
+      while (!disposed && running < limits.maxConcurrent && queue.length > 0) {
         const id = queue.shift();
         const t = tasks.get(id);
         if (!t || t.status !== 'queued') continue; // 已被清理的残留引用，跳过
@@ -916,7 +923,7 @@ export function apply(ctx, config) {
   //   的"非 queued 跳过"逻辑忽略，无需从数组里摘除；
   // - running：先杀子进程再置终态。并发槽不在这里立即释放，而是等子进程
   //   close 后由 finishRunning 统一释放——避免旧进程还活着时新任务提前
-  //   启动、瞬时超出 maxConcurrent。
+  //   启动、瞬时超出 limits.maxConcurrent。
   function toolCancelTask(args) {
     const taskId = typeof args?.taskId === 'string' ? args.taskId : '';
     const t = taskId ? tasks.get(taskId) : null;
@@ -976,11 +983,11 @@ export function apply(ctx, config) {
     return { payload: { taskId: next.id, sessionId: previous.sessionId, status: next.status } };
   }
 
-  // list_tasks：近期任务摘要，按创建时间倒序、最多 historyLimit 条
+  // list_tasks：近期任务摘要，按创建时间倒序、最多 limits.historyLimit 条
   function toolListTasks() {
     const list = [...tasks.values()]
       .sort((a, b) => b.createdAtMs - a.createdAtMs)
-      .slice(0, historyLimit)
+      .slice(0, limits.historyLimit)
       .map((t) => ({
         id: t.id,
         status: t.status,
@@ -1161,7 +1168,7 @@ export function apply(ctx, config) {
         if (rest === '/tasks') {
           const list = [...tasks.values()]
             .sort((a, b) => b.createdAtMs - a.createdAtMs)
-            .slice(0, historyLimit)
+            .slice(0, limits.historyLimit)
             .map(taskView);
           sendJson(res, 200, { tasks: list });
           return;
@@ -1196,10 +1203,12 @@ export function apply(ctx, config) {
           });
           return;
         }
-        // 设置页读取：子代理模型配置 + 可用模型列表（从宿主用户 patch 解析）
+        // 设置页读取：子代理模型 + 运行限额 + 可用模型列表（从宿主用户 patch 解析）
         if (rest === '/config') {
+          const saved = readUserConfig();
           sendJson(res, 200, {
-            agentModel: typeof readUserConfig().agentModel === 'string' ? readUserConfig().agentModel : '',
+            agentModel: typeof saved.agentModel === 'string' ? saved.agentModel : '',
+            limits,
             providers: availableModels(),
             agentModelConfigPath: configFilePath,
           });
@@ -1207,7 +1216,7 @@ export function apply(ctx, config) {
         }
       }
 
-      // 设置页保存：子代理模型覆盖（空串 = 跟随宿主默认模型）
+      // 设置页保存：partial 更新（agentModel 与/或 limits 三项），保存即热生效
       if (method === 'POST' && rest === '/config') {
         let raw;
         try {
@@ -1223,13 +1232,39 @@ export function apply(ctx, config) {
           sendJson(res, 400, { error: 'invalid JSON' });
           return;
         }
-        const agentModel = typeof body?.agentModel === 'string' ? body.agentModel.trim() : '';
-        if (agentModel && !parseAgentModel(agentModel)) {
-          sendJson(res, 400, { error: 'agentModel must be "provider/model" or empty' });
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          sendJson(res, 400, { error: 'body must be a JSON object' });
           return;
         }
-        const saved = writeUserConfig({ agentModel });
-        sendJson(res, 200, { ok: true, agentModel: saved.agentModel ?? '' });
+        const patchObj = {};
+        if (Object.hasOwn(body, 'agentModel')) {
+          const agentModel = typeof body.agentModel === 'string' ? body.agentModel.trim() : '';
+          if (agentModel && !parseAgentModel(agentModel)) {
+            sendJson(res, 400, { error: 'agentModel must be "provider/model" or empty' });
+            return;
+          }
+          patchObj.agentModel = agentModel;
+        }
+        if (
+          Object.hasOwn(body, 'maxConcurrent') ||
+          Object.hasOwn(body, 'maxTaskSeconds') ||
+          Object.hasOwn(body, 'historyLimit')
+        ) {
+          // 与现有用户配置合并后统一 clamp，写入的值总是合法区间内的整数
+          const merged = clampLimits({ ...readUserConfig(), ...body });
+          Object.assign(patchObj, merged);
+          limits = merged; // 热生效：调度/超时/历史裁剪立即用新值
+        }
+        if (Object.keys(patchObj).length === 0) {
+          sendJson(res, 400, { error: 'no recognized fields to save' });
+          return;
+        }
+        const saved = writeUserConfig(patchObj);
+        sendJson(res, 200, {
+          ok: true,
+          agentModel: typeof saved.agentModel === 'string' ? saved.agentModel : '',
+          limits,
+        });
         return;
       }
 

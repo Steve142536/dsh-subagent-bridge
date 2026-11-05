@@ -1,12 +1,11 @@
 # bundle 补丁：插入 Host 侧 MCP 桥接行。
 # Client 面板不需要单独一行：package.json 的 dsh.client 段会让框架
 # 自动发现并加载 ./client 导出（platform: web）。
+# 运行限额（并发/超时/历史条数）与子代理模型不在 patch 里配置——
+# 在 DSH 设置对话框的"DSH 子代理"分区配置，保存在 ~/.dsh/subagent-bridge.config.json。
 - insert:
     - id: dsh-subagent-bridge
       name: '@local/dsh-subagent-bridge'
       inject: [webServer]
       config:
         routePath: /mcp/dsh-subagent
-        maxConcurrent: 4
-        maxTaskSeconds: 1800
-        historyLimit: 50

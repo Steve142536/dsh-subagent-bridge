@@ -55,6 +55,11 @@
     "configSave": "Save",
     "configSaved": "Saved",
     "configError": "Save failed, please retry",
+    "limitsTitle": "Runtime limits",
+    "limitConcurrent": "Max concurrent subagents",
+    "limitTaskSeconds": "Per-task timeout (seconds)",
+    "limitHistory": "History entries kept",
+    "limitsHint": "Saved changes take effect immediately (no DSH restart needed). Tasks above the concurrency cap queue up; tasks past the timeout fail.",
     "unreachable": "Bridge unavailable"
   }
 }

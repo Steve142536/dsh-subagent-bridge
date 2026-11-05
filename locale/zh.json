@@ -55,6 +55,11 @@
     "configSave": "保存",
     "configSaved": "已保存",
     "configError": "保存失败，请重试",
+    "limitsTitle": "运行配置",
+    "limitConcurrent": "同时运行子代理上限",
+    "limitTaskSeconds": "单任务超时（秒）",
+    "limitHistory": "历史任务保留条数",
+    "limitsHint": "保存后立即生效（无需重启 DSH）。超出并发上限的任务排队等待；超时到点的任务判为失败。",
     "unreachable": "桥接不可用"
   }
 }

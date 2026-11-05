@@ -73,14 +73,26 @@ https://raw.githubusercontent.com/Steve142536/dsh-subagent-bridge/main/market-in
 
 DSH 的 web 端口每次启动都会变化，会让 Codex 里注册的 MCP 地址失效。桥接插件内置**端点自动同步**：插件激活、web 端口就绪后，自动把 `~/.codex/config.toml` 中 `[mcp_servers.dsh-subagent]` 段的 `url` 刷新为当前端点（该段不存在时自动追加，等效完成首次注册；本机没有 Codex 配置则跳过）。因此**重启 DSH 后无需手动重新注册**，新开一个 Codex 会话即可使用。设置对话框的"DSH 子代理"分区会显示每次同步的状态（`已写入当前端点` / `端点已是最新` 等）。
 
-## 配置字段（cordis.patch.yml 的 config）
+## 配置
+
+### 设置对话框配置（推荐）
+
+DSH 设置对话框 →"DSH 子代理"分区，保存到 `~/.dsh/subagent-bridge.config.json`，**保存后立即生效**（无需重启 DSH）：
+
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| 子代理模型 | 跟随 DSH 默认模型 | 自定义 `provider/model` 时，启动 headless 子代理时覆盖默认模型 |
+| 同时运行子代理上限 | `8`（1–64） | 超出后排队 |
+| 单任务超时（秒） | `3600`（60–604800） | 超时判为失败 |
+| 历史任务保留条数 | `200`（10–1000） | 面板与 `list_tasks` 保留的历史任务条数 |
+
+### cordis.patch.yml 的 config（仅 routePath）
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `routePath` | `/mcp/dsh-subagent` | HTTP 路由前缀 |
-| `maxConcurrent` | `4` | 同时运行的子代理数上限，超出后排队 |
-| `maxTaskSeconds` | `1800` | 单个任务最长执行秒数，超时判为失败 |
-| `historyLimit` | `50` | 面板与 `list_tasks` 保留的历史任务条数 |
+
+（`maxConcurrent` / `maxTaskSeconds` / `historyLimit` 曾在 patch config 里配置，现已迁到设置对话框，patch 里的残留值会被忽略。）
 
 ## 文件说明
 

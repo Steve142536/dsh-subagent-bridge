@@ -158,6 +158,11 @@ window.__ModuleLoader__.load({
         configSave: '保存',
         configSaved: '已保存',
         configError: '保存失败，请重试',
+        limitsTitle: '运行配置',
+        limitConcurrent: '同时运行子代理上限',
+        limitTaskSeconds: '单任务超时（秒）',
+        limitHistory: '历史任务保留条数',
+        limitsHint: '保存后立即生效（无需重启 DSH）。超出并发上限的任务排队等待；超时到点的任务判为失败。',
         unreachable: '桥接不可用',
       },
       en: {
@@ -212,6 +217,11 @@ window.__ModuleLoader__.load({
         configSave: 'Save',
         configSaved: 'Saved',
         configError: 'Save failed, please retry',
+        limitsTitle: 'Runtime limits',
+        limitConcurrent: 'Max concurrent subagents',
+        limitTaskSeconds: 'Per-task timeout (seconds)',
+        limitHistory: 'History entries kept',
+        limitsHint: 'Saved changes take effect immediately (no DSH restart needed). Tasks above the concurrency cap queue up; tasks past the timeout fail.',
         unreachable: 'Bridge unavailable',
       },
     };
@@ -339,6 +349,10 @@ window.__ModuleLoader__.load({
       '.dsh-subagent-bridge-cfg-input{flex:1 1 auto;min-width:0;font:inherit;font-size:12px;padding:4px 6px;border:1px solid var(--dsw-alias-border-l1);border-radius:4px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}',
       '.dsh-subagent-bridge-cfg-hint{font-size:11px;opacity:.8}',
       '.dsh-subagent-bridge-cfg-saved{font-size:11px;color:var(--dsw-alias-state-success-primary)}',
+      // 运行限额卡：标签 + 数字输入行
+      '.dsh-subagent-bridge-limits-row{display:flex;align-items:center;gap:8px}',
+      '.dsh-subagent-bridge-limits-label{flex:0 0 auto;font-size:12px;color:var(--dsw-alias-label-primary)}',
+      '.dsh-subagent-bridge-limits-input{flex:0 0 120px}',
     ].join('');
 
     /* ============================== 组件 ============================== */
@@ -817,6 +831,112 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // 运行限额卡：并发上限 / 单任务超时 / 历史条数。保存后 Host 热生效
+    //（调度、超时、历史裁剪立即使用新值，无需重启 DSH）。
+    function LimitsConfig() {
+      const t = localeApi.t;
+      useStoreOrNoop(localeApi.subscribe || noopSubscribe, localeApi.getSnapshot || nullSnapshot);
+      const [values, setValues] = React.useState({ maxConcurrent: '', maxTaskSeconds: '', historyLimit: '' });
+      const [saveState, setSaveState] = React.useState('idle');
+      const timerRef = React.useRef(null);
+
+      React.useEffect(function () {
+        let alive = true;
+        const controller = new AbortController();
+        fetch(CONFIG_URL, { signal: controller.signal })
+          .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+          })
+          .then(function (data) {
+            if (!alive || !data || !data.limits) return;
+            setValues({
+              maxConcurrent: String(data.limits.maxConcurrent ?? ''),
+              maxTaskSeconds: String(data.limits.maxTaskSeconds ?? ''),
+              historyLimit: String(data.limits.historyLimit ?? ''),
+            });
+          })
+          .catch(function () { /* 拿不到现值就保持空输入，用户可手填 */ });
+        return function () {
+          alive = false;
+          controller.abort();
+          if (timerRef.current) {
+            clearTimeout(timerRef.current);
+            timerRef.current = null;
+          }
+        };
+      }, []);
+
+      const numbers = {
+        maxConcurrent: Number(values.maxConcurrent),
+        maxTaskSeconds: Number(values.maxTaskSeconds),
+        historyLimit: Number(values.historyLimit),
+      };
+      const valid = ['maxConcurrent', 'maxTaskSeconds', 'historyLimit'].every(function (key) {
+        return values[key] !== '' && Number.isFinite(numbers[key]);
+      });
+
+      function save() {
+        setSaveState('saving');
+        fetch(CONFIG_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(numbers),
+        })
+          .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+          })
+          .then(function (data) {
+            if (data && data.limits) {
+              setValues({
+                maxConcurrent: String(data.limits.maxConcurrent),
+                maxTaskSeconds: String(data.limits.maxTaskSeconds),
+                historyLimit: String(data.limits.historyLimit),
+              });
+            }
+            setSaveState('saved');
+            if (timerRef.current) clearTimeout(timerRef.current);
+            timerRef.current = setTimeout(function () { setSaveState('idle'); }, 2000);
+          })
+          .catch(function () { setSaveState('error'); });
+      }
+
+      function field(key, label) {
+        return h('label', { key: key, className: 'dsh-subagent-bridge-limits-row' },
+          h('span', { className: 'dsh-subagent-bridge-limits-label' }, label),
+          h('input', {
+            type: 'number',
+            min: 1,
+            className: 'dsh-subagent-bridge-cfg-input dsh-subagent-bridge-limits-input',
+            value: values[key],
+            onChange: function (event) {
+              const next = event.target.value;
+              setValues(function (prev) { return { ...prev, [key]: next }; });
+            },
+          }),
+        );
+      }
+
+      return h('div', { className: 'dsh-subagent-bridge-cfg' },
+        h('div', { className: 'dsh-subagent-bridge-cfg-title' }, t('limitsTitle')),
+        field('maxConcurrent', t('limitConcurrent')),
+        field('maxTaskSeconds', t('limitTaskSeconds')),
+        field('historyLimit', t('limitHistory')),
+        h('div', { className: 'dsh-subagent-bridge-cfg-row' },
+          h('button', {
+            type: 'button',
+            className: 'dsh-subagent-bridge-copy',
+            disabled: !valid || saveState === 'saving',
+            onClick: save,
+          }, saveState === 'saving' ? '…' : t('configSave')),
+          saveState === 'saved' ? h('span', { className: 'dsh-subagent-bridge-cfg-saved' }, t('configSaved')) : null,
+          saveState === 'error' ? h('span', { className: 'dsh-subagent-bridge-cfg-hint dsh-subagent-bridge-detail-failed' }, t('configError')) : null,
+        ),
+        h('div', { className: 'dsh-subagent-bridge-cfg-hint' }, t('limitsHint')),
+      );
+    }
+
     // DSH 设置对话框的"DSH 子代理"分区（settings.section）：模型配置 + 使用指引。
     // 布局对齐官方设置页（max-width 720px、主题 token）；props 里仅 close 由
     // 宿主外壳提供，本页不使用。
@@ -827,6 +947,7 @@ window.__ModuleLoader__.load({
         h('style', null, CSS),
         h('h3', { className: 'dsh-subagent-bridge-settings-title' }, t('title')),
         h(ModelConfig, { key: 'model' }),
+        h(LimitsConfig, { key: 'limits' }),
         h(ConnectHint, { key: 'guide', t: t }),
       );
     }
