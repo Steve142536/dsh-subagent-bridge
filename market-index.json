@@ -1,0 +1,41 @@
+{
+  "format": 1,
+  "title": {
+    "zh": "飞鼠的 DSH 插件索引",
+    "en": "Feishu's DSH plugin index"
+  },
+  "description": {
+    "zh": "个人维护的 DeepSeek Harness 插件集合。把本索引的 URL 添加到 DSH 的插件市场后，这里的插件会出现在插件页，发新版时会显示更新提示。",
+    "en": "A personally maintained collection of DeepSeek Harness plugins. Add this index URL in the DSH plugin market and listed plugins appear on the plugins page with update hints on new releases."
+  },
+  "plugins": [
+    {
+      "name": "@local/dsh-subagent-bridge",
+      "title": {
+        "zh": "DSH 子代理桥接",
+        "en": "DSH Subagent Bridge"
+      },
+      "description": {
+        "zh": "让 Codex 通过 MCP 把任务委托给 DSH 子代理执行，DSH 侧边栏面板实时显示运行状态；支持在 DSH 设置里选择子代理模型，DSH 重启后自动同步 Codex 端点。",
+        "en": "Let Codex delegate tasks to DSH subagents over MCP with a live DSH sidebar panel; pick the subagent model in DSH settings and the Codex endpoint syncs automatically after DSH restarts."
+      },
+      "icon": "icon.svg",
+      "author": "Steve142536",
+      "homepage": "https://github.com/Steve142536/dsh-subagent-bridge",
+      "repository": {
+        "url": "https://github.com/Steve142536/dsh-subagent-bridge"
+      },
+      "versions": [
+        {
+          "version": "1.2.0",
+          "publishTimestamp": 1793852300,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Steve142536/dsh-subagent-bridge",
+            "commit": "2c05278a9ac503a917ea4e2f98e63cbb8d56ef49"
+          }
+        }
+      ]
+    }
+  ]
+}

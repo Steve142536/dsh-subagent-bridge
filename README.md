@@ -31,6 +31,20 @@ cd dsh-subagent-bridge
 
 方式 B（一步到位）：直接用 Git 地址安装——在 DSH 会话里让助手用 plugin_manager 安装 `git+https://github.com/Steve142536/dsh-subagent-bridge.git#v1.1.0`（tag 固定版本）。若当前版本的插件管理不接受 git 地址，退回方式 A。
 
+## 插件市场索引（原生更新提示）
+
+DSH 的更新提示来自**插件市场索引**：一个放在 https 上的 JSON 清单，DSH 拉取后用语义化版本对比已安装版本，索引里版本更新时插件页显示"更新可用"，可一键安装（自动生成 `git+https://...#<commit>` 安装命令）。
+
+**使用者**（一次性配置）：在 DSH 的插件市场里添加索引 URL：
+
+```
+https://raw.githubusercontent.com/Steve142536/dsh-subagent-bridge/main/market-index.json
+```
+
+之后"DSH 子代理桥接"会出现在插件页；本仓库每次发新版，已配置索引的用户会看到更新提示。
+
+**维护者**（发版流程）：提交代码 → 打 tag → 在 `market-index.json` 的 `versions` 数组追加新条目（`version` + `publishTimestamp`（Unix 秒）+ `source.commit`（该版本的完整 40 位 commit SHA））→ 提交推送。
+
 ## 安装到其他机器
 
 前提：目标机器装有**桌面版 DeepSeek Harness**（子代理启动器依赖桌面版的 Electron 运行时路径，CLI 版 `dsh` 不可用）。
