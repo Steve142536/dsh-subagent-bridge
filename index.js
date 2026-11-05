@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 const PROTOCOL_VERSION_DEFAULT = '2025-06-18';
 const SERVER_INFO = { name: 'dsh-subagent-bridge', version: '1.0.0' };
 const MCP_INSTRUCTIONS =
-  'Delegate coding tasks to a DSH (DeepSeek Harness) subagent. Start a task, then poll with wait_task until it completes.';
+  'Delegate tasks to DSH subagents. Start tasks and wait for results; use cancel_task to cancel, or continue_task for a completed session. Running tasks cannot receive messages.';
 const BODY_LIMIT = 1024 * 1024;   // MCP 请求体上限 1MB，超限回 413
 const STDERR_TAIL_LIMIT = 4000;   // stderr 只保留尾部 4000 字符做失败诊断
 const ERROR_TEXT_LIMIT = 2000;    // 对外错误文本截断长度
@@ -31,6 +31,9 @@ const SUMMARY_LIMIT = 120;        // list_tasks 任务文本摘要长度
 const WAIT_MIN_SECONDS = 10;      // wait_task 阻塞时长下限
 const WAIT_MAX_SECONDS = 600;     // wait_task 阻塞时长上限
 const WAIT_DEFAULT_SECONDS = 120; // wait_task 默认阻塞时长
+const KILL_GRACE_MS = 5000;       // cancel_task 后 SIGTERM→SIGKILL 的宽限期；
+                                  // 宽限到点仍不退出就强杀，保证 close 事件一定到来，
+                                  // 并发槽才不会永久挂起
 
 // 插件自身目录：用 import.meta.url 定位，不依赖 process.cwd()；路径含中文目录名
 // 也可以直接作为 spawn 参数传给子进程（不经 cmd.exe，无转义问题）。
@@ -229,6 +232,35 @@ const TOOLS = [
     },
   },
   {
+    name: 'cancel_task',
+    description:
+      'Cancel a queued or running DSH subagent task. The task moves to the cancelled state immediately and any wait_task call on it returns right away; its subprocess is killed.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: {
+          type: 'string',
+          description: 'Task id returned by start_task.',
+        },
+      },
+      required: ['taskId'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'continue_task',
+    description: 'Continue a completed DSH task in the same session. Returns a new taskId; wait for that task. Running tasks cannot be steered.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: 'Completed task id whose session should be continued.' },
+        message: { type: 'string', description: 'Follow-up instructions for that session.' },
+      },
+      required: ['taskId', 'message'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'list_tasks',
     description: 'List recent DSH subagent tasks with id, status, and a short summary.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -357,12 +389,14 @@ export function apply(ctx, config) {
     return id;
   }
 
-  function createTask(task, cwd) {
+  // 创建待执行任务；续接任务保留原 DSH 会话标识。
+  function createTask(task, cwd, resumeSessionId = null) {
     const nowMs = Date.now();
     const t = {
       id: newTaskId(),
       task,
       cwd,
+      resumeSessionId,
       status: 'queued',
       createdAtMs: nowMs,
       createdAt: new Date(nowMs).toISOString(),
@@ -372,10 +406,15 @@ export function apply(ctx, config) {
       endedAt: null,
       sessionId: null,
       answer: '',       // 'final' 事件给出的最终答案（completed 时对外）
-      eventError: null, // 'error' 事件文本（诊断备用，不单独作为失败依据）
+      gotFinal: false,  // 是否收到过有效 final（text 为非空字符串）——
+                        // 退出码 0 但从未收到有效 final 时不得判 completed
+      eventError: null, // 'error' 事件文本（收到过就不得判 completed，作失败诊断）
       stderrTail: '',   // 子进程 stderr 尾部（仅诊断用；其中的 import 警告无害）
-      error: null,      // failed 时对外诊断
+      error: null,      // failed/cancelled 时对外诊断（cancelled 存取消原因）
       timedOut: false,  // 是否因 maxTaskSeconds 超时被杀
+      cancelRequested: false, // 是否被 cancel_task 请求取消
+      occupiesSlot: false,    // 是否正占用并发槽（释放以它为准，防漏防重）
+      killTimer: null,  // 取消后的强杀兜底定时器（SIGTERM 宽限到点转 SIGKILL）
       pid: null,
       child: null,
       timer: null,      // 任务级超时定时器
@@ -396,13 +435,13 @@ export function apply(ctx, config) {
       id: t.id,
       task: t.task,
       cwd: t.cwd,
-      status: t.status, // queued | running | completed | failed
+      status: t.status, // queued | running | completed | failed | cancelled
       createdAt: t.createdAt,
       startedAt: t.startedAt,
       endedAt: t.endedAt,
       sessionId: t.sessionId,
       answer: t.status === 'completed' ? t.answer : null,
-      error: t.status === 'failed' ? t.error : null,
+      error: t.status === 'failed' || t.status === 'cancelled' ? t.error : null,
       pid: t.pid,
       elapsedMs: elapsedMs(t),
     };
@@ -417,14 +456,17 @@ export function apply(ctx, config) {
       elapsedMs: elapsedMs(t),
     };
     if (t.status === 'completed') payload.answer = t.answer;
-    if (t.status === 'failed') payload.error = t.error;
+    if (t.status === 'failed' || t.status === 'cancelled') payload.error = t.error;
     return payload;
   }
 
   // 历史裁剪：终态任务超过 historyLimit 时按创建时间删最旧（不动 queued/running）
   function trimHistory() {
     const finished = [...tasks.values()]
-      .filter((t) => t.status === 'completed' || t.status === 'failed')
+      .filter(
+        (t) =>
+          t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled',
+      )
       .sort((a, b) => a.createdAtMs - b.createdAtMs);
     let excess = finished.length - historyLimit;
     for (const t of finished) {
@@ -447,12 +489,24 @@ export function apply(ctx, config) {
     }
   }
 
-  // 置终态 + 唤醒等待者 + 裁剪历史；返回是否真的发生了终态迁移
+  // 置终态 + 唤醒等待者 + 裁剪历史；返回是否真的发生了终态迁移。
+  // cancelled 与 completed/failed 同为终态，一旦进入不可被后续事件覆盖
+  // （例如取消后子进程 close 再触发时，状态保持 cancelled）。
   function finalize(t, status, patch = {}) {
-    if (t.status === 'completed' || t.status === 'failed') return false;
+    if (
+      t.status === 'completed' ||
+      t.status === 'failed' ||
+      t.status === 'cancelled'
+    ) {
+      return false;
+    }
     if (t.timer) {
       clearTimeout(t.timer);
       t.timer = null;
+    }
+    if (t.killTimer && status !== 'cancelled') {
+      clearTimeout(t.killTimer);
+      t.killTimer = null;
     }
     const nowMs = Date.now();
     t.status = status;
@@ -462,23 +516,39 @@ export function apply(ctx, config) {
     if (status === 'failed') {
       t.error = truncateTail(patch.error ?? 'unknown failure', ERROR_TEXT_LIMIT);
     }
-    t.child = null;
+    if (status === 'cancelled') {
+      // 取消原因复用 error 字段承载，面板与 wait_task 都能展示
+      t.error = truncateTail(patch.error ?? 'cancelled', ERROR_TEXT_LIMIT);
+    }
+    if (status !== 'cancelled') t.child = null;
     notifyWaiters(t);
     trimHistory();
     return true;
   }
 
-  // 运行中任务的收尾：释放并发槽并调度下一个排队任务
-  function finishRunning(t, status, patch = {}) {
-    const wasRunning = t.status === 'running';
-    if (!finalize(t, status, patch)) return;
-    if (wasRunning) running--;
+  // 释放任务占用的并发槽并调度下一个排队任务。
+  // 以 occupiesSlot 为唯一释放依据：不会因 close/error 多次事件重复递减，
+  // 也不会因取消路径提前 finalize 而漏释放（漏了会永久占死一个槽）。
+  function releaseSlot(t) {
+    if (!t.occupiesSlot) return;
+    t.child = null;
+    t.occupiesSlot = false;
+    running--;
     tryLaunch();
+  }
+
+  // 子进程事件路径（close / error）的统一收尾：置终态 + 释放槽。
+  // finalize 可能因任务已被取消/收尾而不迁移状态，但子进程确实已退出时
+  // 槽必须释放，所以 finalize 与 releaseSlot 各自独立幂等。
+  function finishRunning(t, status, patch = {}) {
+    finalize(t, status, patch);
+    releaseSlot(t);
   }
 
   // 启动 headless 子进程执行任务（调用方保证有空闲槽位）
   function startTask(t) {
     running++;
+    t.occupiesSlot = true; // 与 running++ 成对；之后由 releaseSlot 统一释放
     t.status = 'running';
     t.startedAtMs = Date.now();
     t.startedAt = new Date(t.startedAtMs).toISOString();
@@ -490,7 +560,8 @@ export function apply(ctx, config) {
     }
 
     // 直接 spawn Electron exe + ELECTRON_RUN_AS_NODE，等价官方 dsh.cmd 但绕开 cmd.exe 转义；
-    // 中文目录等路径原样作为参数传入即可。实测 Node 的 exit 事件在此模式下可靠。
+    // 中文目录等路径原样作为参数传入即可。终态判定统一放在 close 事件
+    // （见下），exit 只负责资源清理。
     // overlay 每次任务动态生成（读宿主 desktop 用户 patch + 可选模型覆盖），
     // 写临时文件、子进程退出后删除。
     const overlayFile = writeTempOverlay();
@@ -505,7 +576,8 @@ export function apply(ctx, config) {
       if (t.cwd && path.isAbsolute(t.cwd)) spawnOptions.cwd = t.cwd;
       child = spawn(
         launcher.exe,
-        [launcher.cliJs, '--profile', 'headless', '--patch', overlayFile, '--json'],
+        [launcher.cliJs, '--profile', 'headless', '--patch', overlayFile, '--json',
+          ...(t.resumeSessionId ? ['--session-id', t.resumeSessionId] : [])],
         spawnOptions,
       );
     } catch (err) {
@@ -525,7 +597,7 @@ export function apply(ctx, config) {
     child.stdin.on('error', () => {});
     child.stdin.end(t.task);
 
-    // 任务级超时：到点杀进程；终态判定统一在 exit 回调里做
+    // 任务级超时：到点杀进程；终态判定统一在 close 回调里做
     t.timer = setTimeout(() => {
       t.timedOut = true;
       try {
@@ -554,10 +626,16 @@ export function apply(ctx, config) {
               ? event.id
               : t.sessionId;
       } else if (event.type === 'final') {
-        // final 事件带 text（最终答案，可能是空串）
-        if (typeof event.text === 'string') t.answer = event.text;
+        // final 事件带 text（最终答案，可能是空串）。
+        // 只有 text 为非空字符串才算"有效 final"：退出码 0 但从未收到
+        // 有效 final 时不能判 completed（防止异常收尾误报成功）。
+        if (typeof event.text === 'string') {
+          t.answer = event.text;
+          if (event.text.trim()) t.gotFinal = true;
+        }
       } else if (event.type === 'error') {
-        // error 事件带 message；仅作诊断素材，失败判定仍以退出码为准
+        // error 事件带 message：收到过就不能把任务判成 completed，
+        // 文本同时作为失败诊断素材
         t.eventError = typeof event.message === 'string' ? event.message : JSON.stringify(event);
       }
     });
@@ -574,13 +652,32 @@ export function apply(ctx, config) {
       finishRunning(t, 'failed', { error: `failed to run dsh: ${err?.message ?? err}` });
     });
 
-    // 进程退出：exit 0 → completed（答案取 final.text）；非 0 → failed（诊断取
-    // stderr 尾部，其次 error 事件文本）；超时被杀 → failed 并标注原因
-    child.on('exit', (code) => {
+    // 进程退出：只做资源清理。终态判定放在 close 事件——exit 触发时 stdout
+    // 的缓冲可能还没读尽，最后的 'final' 事件行会因此丢失；close 保证 stdio
+    // 流全部结束（stdout 数据已读完）后才触发。
+    child.on('exit', () => {
       try {
         fs.unlinkSync(overlayFile); // 临时 overlay 用完即删
       } catch {
         // 已被清理也无妨
+      }
+      if (t.killTimer) {
+        // 进程已退出，强杀兜底定时器不再需要
+        clearTimeout(t.killTimer);
+        t.killTimer = null;
+      }
+    });
+
+    // stdio 流全部结束、stdout 完整收尾后的终态判定：
+    // - 超时被杀 → failed（标注超时原因）；
+    // - 已被取消 → 保持 cancelled（finalize 幂等拒绝，这里只释放并发槽）；
+    // - 退出码 0 且收到过有效 final 且无 error 事件 → completed；
+    // - 其余（非 0 退出、退出 0 但没有有效 final、收到过 error 事件）→ failed，
+    //   绝不因退出码好看而误报成功。
+    child.on('close', (code) => {
+      if (t.killTimer) {
+        clearTimeout(t.killTimer);
+        t.killTimer = null;
       }
       if (t.timedOut) {
         finishRunning(t, 'failed', {
@@ -588,12 +685,18 @@ export function apply(ctx, config) {
             `task exceeded maxTaskSeconds (${maxTaskSeconds}s)` +
             (t.stderrTail ? `; ${t.stderrTail}` : ''),
         });
-      } else if (code === 0) {
+      } else if (code === 0 && t.gotFinal && !t.eventError) {
         finishRunning(t, 'completed', { answer: t.answer });
       } else {
-        finishRunning(t, 'failed', {
-          error: t.stderrTail || t.eventError || `dsh exited with code ${code ?? 'null'}`,
-        });
+        let reason;
+        if (code === 0 && !t.gotFinal) {
+          reason = 'dsh exited with code 0 but no valid final event was received';
+        } else {
+          reason = `dsh exited with code ${code ?? 'null'}`;
+        }
+        if (t.eventError) reason += `; error event: ${t.eventError}`;
+        if (t.stderrTail) reason += `; ${t.stderrTail}`;
+        finishRunning(t, 'failed', { error: reason });
       }
     });
   }
@@ -621,9 +724,32 @@ export function apply(ctx, config) {
     if (!task.trim()) {
       return { isError: true, payload: { error: 'arguments.task must be a non-empty string' } };
     }
-    // cwd 仅接受绝对路径；否则存 null，交给 headless 自己解析
+    // cwd 校验：给了 cwd 就必须是已存在的绝对路径目录，否则明确报错（isError），
+    // 不再静默交给 headless 自行解析——错误目录会让任务在错误位置执行还难以排查
+    let cwd = null;
     const cwdInput = typeof args?.cwd === 'string' ? args.cwd.trim() : '';
-    const cwd = cwdInput && path.isAbsolute(cwdInput) ? cwdInput : null;
+    if (cwdInput) {
+      if (!path.isAbsolute(cwdInput)) {
+        return {
+          isError: true,
+          payload: { error: `arguments.cwd must be an absolute path, got: ${cwdInput}` },
+        };
+      }
+      try {
+        if (!fs.statSync(cwdInput).isDirectory()) {
+          return {
+            isError: true,
+            payload: { error: `arguments.cwd is not a directory: ${cwdInput}` },
+          };
+        }
+      } catch {
+        return {
+          isError: true,
+          payload: { error: `arguments.cwd does not exist or is not accessible: ${cwdInput}` },
+        };
+      }
+      cwd = cwdInput;
+    }
     const t = createTask(task, cwd);
     queue.push(t.id);
     tryLaunch();
@@ -648,7 +774,9 @@ export function apply(ctx, config) {
     if (!Number.isFinite(seconds)) seconds = WAIT_DEFAULT_SECONDS;
     seconds = Math.min(Math.max(seconds, WAIT_MIN_SECONDS), WAIT_MAX_SECONDS);
 
-    if (t.status === 'completed' || t.status === 'failed') {
+    // 终态（completed/failed/cancelled）立即返回快照；cancelled 由
+    // notifyWaiters 唤醒后走到同一出口，等待方第一时间获知取消
+    if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
       return { payload: taskSnapshot(t) };
     }
 
@@ -690,6 +818,72 @@ export function apply(ctx, config) {
     return { payload };
   }
 
+  // cancel_task：取消排队或运行中的任务，任务立即进入 cancelled 终态，
+  // wait_task 等待者经 notifyWaiters 即时唤醒。
+  // - queued：未占并发槽，直接置终态即可；queue 里残留的 id 会被 tryLaunch
+  //   的"非 queued 跳过"逻辑忽略，无需从数组里摘除；
+  // - running：先杀子进程再置终态。并发槽不在这里立即释放，而是等子进程
+  //   close 后由 finishRunning 统一释放——避免旧进程还活着时新任务提前
+  //   启动、瞬时超出 maxConcurrent。
+  function toolCancelTask(args) {
+    const taskId = typeof args?.taskId === 'string' ? args.taskId : '';
+    const t = taskId ? tasks.get(taskId) : null;
+    if (!t) {
+      return { isError: true, payload: { error: 'unknown taskId' } };
+    }
+    if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
+      // 已是终态：幂等返回当前状态，不算错误（调用方与收尾事件可能并发）
+      return {
+        payload: { taskId: t.id, status: t.status, note: 'task already finished' },
+      };
+    }
+    t.cancelRequested = true;
+    if (t.status === 'queued') {
+      finalize(t, 'cancelled', { error: 'cancelled before start' });
+      return {
+        payload: { taskId: t.id, status: t.status, note: 'queued task cancelled' },
+      };
+    }
+    // 运行中：杀子进程；Windows 上 kill() 即强终止，POSIX 上先发 SIGTERM，
+    // 若宽限期内仍未退出再补 SIGKILL，保证 close 事件最终一定到来
+    try {
+      t.child?.kill();
+    } catch {
+      // 进程可能已自行退出
+    }
+    if (t.killTimer) clearTimeout(t.killTimer);
+    t.killTimer = setTimeout(() => {
+      t.killTimer = null;
+      try {
+        t.child?.kill('SIGKILL');
+      } catch {
+        // 进程可能已退出
+      }
+    }, KILL_GRACE_MS);
+    finalize(t, 'cancelled', { error: 'cancelled by request' });
+    return {
+      payload: { taskId: t.id, status: t.status, note: 'running task cancelled' },
+    };
+  }
+
+  // 复用已完成任务的持久化会话，另起任务执行追问。
+  function toolContinueTask(args) {
+    const previous = tasks.get(args?.taskId);
+    if (!previous) return { isError: true, payload: { error: 'unknown taskId' } };
+    if (previous.status !== 'completed' || !previous.sessionId) {
+      return { isError: true, payload: { error: 'task must be completed with a sessionId before continuation' } };
+    }
+    const message = typeof args?.message === 'string' ? args.message : '';
+    if (!message.trim()) return { isError: true, payload: { error: 'arguments.message must be a non-empty string' } };
+    const active = [...tasks.values()].find((task) =>
+      task.resumeSessionId === previous.sessionId && (task.status === 'queued' || task.status === 'running'));
+    if (active) return { isError: true, payload: { error: `session already has an active continuation: ${active.id}` } };
+    const next = createTask(message, previous.cwd, previous.sessionId);
+    queue.push(next.id);
+    tryLaunch();
+    return { payload: { taskId: next.id, sessionId: previous.sessionId, status: next.status } };
+  }
+
   // list_tasks：近期任务摘要，按创建时间倒序、最多 historyLimit 条
   function toolListTasks() {
     const list = [...tasks.values()]
@@ -707,6 +901,8 @@ export function apply(ctx, config) {
   async function callTool(name, args) {
     if (name === 'start_task') return toolStartTask(args);
     if (name === 'wait_task') return toolWaitTask(args);
+    if (name === 'cancel_task') return toolCancelTask(args);
+    if (name === 'continue_task') return toolContinueTask(args);
     if (name === 'list_tasks') return toolListTasks();
     return null; // 未知工具
   }
@@ -899,7 +1095,7 @@ export function apply(ctx, config) {
           }
           sendJson(res, 200, {
             mcpUrl: origin + routePath,
-            tools: ['start_task', 'wait_task', 'list_tasks'],
+            tools: ['start_task', 'wait_task', 'cancel_task', 'continue_task', 'list_tasks'],
             activeCount: [...tasks.values()].filter(
               (t) => t.status === 'queued' || t.status === 'running',
             ).length,
@@ -970,18 +1166,23 @@ export function apply(ctx, config) {
       } catch {
         // 路由已失效也无妨
       }
-      // 2. 收尾所有未终态任务：杀子进程、标记失败、唤醒等待者（finalize 内清定时器）
+      // 2. 收尾所有未终态任务：杀子进程、标记失败、唤醒等待者（finalize 内
+      //    清定时器）；槽位经 releaseSlot 统一释放，保持计数一致
       for (const t of tasks.values()) {
-        if (t.status === 'completed' || t.status === 'failed') continue;
-        const wasRunning = t.status === 'running';
+        if (
+          t.status === 'completed' ||
+          t.status === 'failed' ||
+          t.status === 'cancelled'
+        ) {
+          continue;
+        }
         try {
           t.child?.kill(); // Windows 上 child.kill() 即可，不做更复杂的进程树处理
         } catch {
           // 进程可能已退出
         }
-        if (finalize(t, 'failed', { error: 'host shutting down' }) && wasRunning) {
-          running--;
-        }
+        finalize(t, 'failed', { error: 'host shutting down' });
+        releaseSlot(t); // disposed 已置 true，tryLaunch 不会启动新任务
       }
       // 3. 定时器已全部随 finalize 清空；waiter 自身的超时定时器由其唤醒回调清理
     };

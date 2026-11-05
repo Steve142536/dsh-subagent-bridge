@@ -5,11 +5,14 @@
 ## 功能
 
 - 在宿主 Web 服务的 `<origin>/mcp/dsh-subagent` 暴露 MCP streamable-http 端点（JSON-RPC 2.0，无鉴权，仅宿主 loopback 服务可达）。
-- 三个 MCP 工具：
-  - `start_task`：启动一个全新 headless DSH 子代理执行任务，立即返回 `taskId`；
+- 五个 MCP 工具：
+  - `start_task`：启动一个全新 headless DSH 子代理执行任务，立即返回 `taskId`（`cwd` 必须是已存在的绝对路径目录，否则明确报错）；
   - `wait_task`：阻塞等待任务完成并返回最终答案（超时未完则返回当前状态，可继续轮询）；
+  - `cancel_task`：取消排队或运行中的任务，任务进入 `cancelled` 状态，`wait_task` 等待方即时获知；
+  - `continue_task`：向已完成任务的同一个 DSH 会话发送后续指令，返回新的任务 ID；当前无法向正在运行的任务插话；
   - `list_tasks`：列出近期任务（id、状态、摘要）。
-- 每个任务 spawn 一个 headless DSH 进程（`--profile headless --patch <overlay> --json`），任务全文经 stdin 传入，逐行解析 JSON 事件（`session`/`final`/`error`）收集会话与答案。
+- 每个任务 spawn 一个 headless DSH 进程（`--profile headless --patch <overlay> --json`），任务全文经 stdin 传入，逐行解析 JSON 事件（`session`/`final`/`error`）收集会话与答案。终态判定在 stdio 全部收尾（`close` 事件）后进行：退出码 0 且收到过有效 `final` 且无 `error` 事件才算 `completed`，否则一律 `failed`。
+- 任务状态：`queued` → `running` → `completed` / `failed` / `cancelled`。
 - 超出 `maxConcurrent` 的任务排队执行；单任务超时 `maxTaskSeconds` 判为失败；终态任务仅保留 `historyLimit` 条。
 - 只读端点 `GET /tasks`、`GET /tasks/<id>`、`GET /info` 供 Web 面板轮询（`/info` 返回 `mcpUrl`、`tools`、`activeCount`、`dshReady`）。
 

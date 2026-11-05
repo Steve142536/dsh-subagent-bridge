@@ -20,8 +20,6 @@ window.__ModuleLoader__.load({
     const ICON_SLOT = 'sidebar.panellist';
     const PANEL_SLOT = 'main';
     const PANEL_KEY = 'dsh-subagent-bridge';
-    const PLUGIN_PACKAGE = '@local/dsh-subagent-bridge'; // bundle 详情页配置 slot 的 key = 包名
-    const PLUGIN_CONFIG_SLOT = 'plugins.bundle.config';
     const LOCALE_NS = '@local/dsh-subagent-bridge'; // locale 词典命名空间，与插件 id 一致
     const TASKS_URL = '/mcp/dsh-subagent/tasks';
     const INFO_URL = '/mcp/dsh-subagent/info';
@@ -44,6 +42,7 @@ window.__ModuleLoader__.load({
       if (status === 'running') return COLOR_RUNNING;
       if (status === 'completed') return COLOR_COMPLETED;
       if (status === 'failed') return COLOR_FAILED;
+      if (status === 'cancelled') return COLOR_FAILED; // 取消与失败同用错误色，区别于灰色排队
       return COLOR_QUEUED;
     }
 
@@ -51,6 +50,7 @@ window.__ModuleLoader__.load({
       if (status === 'running') return 'statusRunning';
       if (status === 'completed') return 'statusCompleted';
       if (status === 'failed') return 'statusFailed';
+      if (status === 'cancelled') return 'statusCancelled';
       return 'statusQueued';
     }
 
@@ -118,6 +118,7 @@ window.__ModuleLoader__.load({
         statusRunning: '运行中',
         statusCompleted: '已完成',
         statusFailed: '失败',
+        statusCancelled: '已取消',
         connectTitle: '在 Codex 中把 DSH 当作子代理使用',
         showGuide: '展开使用说明',
         hideGuide: '收起使用说明',
@@ -163,6 +164,7 @@ window.__ModuleLoader__.load({
         statusRunning: 'Running',
         statusCompleted: 'Completed',
         statusFailed: 'Failed',
+        statusCancelled: 'Cancelled',
         connectTitle: 'Use DSH as a subagent in Codex',
         showGuide: 'Show usage guide',
         hideGuide: 'Hide usage guide',
@@ -300,11 +302,9 @@ window.__ModuleLoader__.load({
       // 全文块：左侧竖线标识引用区；超高滚动，避免超长结果撑爆面板
       '.dsh-subagent-bridge-full-text{font-size:11px;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow-y:auto;padding-left:6px;border-left:2px solid var(--dsw-alias-border-l2)}',
       '.dsh-subagent-bridge-detail-failed{color:var(--dsw-alias-state-error-primary)}',
-      // Codex 接入指引（空状态）
-      // 使用指引容器（页面顶部）：折叠态仅标题行，展开态含三步与复制块
-      '.dsh-subagent-bridge-connect{display:flex;flex-direction:column;gap:4px;padding:8px;background:var(--dsw-alias-bg-layer-2);border:1px dashed var(--dsw-alias-border-l2);border-radius:6px}',
-      '.dsh-subagent-bridge-connect-toggle{display:flex;align-items:center;gap:6px;padding:0;margin:0;font:inherit;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary);background:transparent;border:none;cursor:pointer;text-align:left}',
-      '.dsh-subagent-bridge-connect-folded{padding:4px 8px}',
+      // 使用指引块（设置页分区内）：三步说明 + 提示词 + 手动命令
+      '.dsh-subagent-bridge-connect{display:flex;flex-direction:column;gap:4px;padding:12px 14px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:12px}',
+      '.dsh-subagent-bridge-connect-title{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary)}',
       '.dsh-subagent-bridge-connect-hint{font-size:11px}',
       '.dsh-subagent-bridge-command-row{display:flex;align-items:center;gap:6px;margin-top:2px}',
       '.dsh-subagent-bridge-command{flex:1 1 auto;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;padding:4px 6px;border:1px solid var(--dsw-alias-border-l1);border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary)}',
@@ -314,8 +314,10 @@ window.__ModuleLoader__.load({
       '.dsh-subagent-bridge-prompt{flex:1 1 auto;min-width:0;max-height:180px;overflow-y:auto;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;padding:6px;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1);border-radius:4px;color:var(--dsw-alias-label-primary)}',
       '.dsh-subagent-bridge-copy{flex:none;font:inherit;font-size:11px;padding:3px 8px;border-radius:4px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer}',
       '.dsh-subagent-bridge-copy:hover{color:var(--dsw-alias-label-primary)}',
-      // 设置表单（bundle 详情页）：标题 + 下拉/手填 + 保存反馈
-      '.dsh-subagent-bridge-cfg{display:flex;flex-direction:column;gap:8px;padding:10px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;max-width:560px}',
+      // 设置页分区：容器（对齐官方设置页宽度）+ 模型配置卡
+      '.dsh-subagent-bridge-settings{display:flex;flex-direction:column;gap:12px;max-width:720px;font-size:13px;line-height:20px}',
+      '.dsh-subagent-bridge-settings-title{margin:0;font-size:16px;font-weight:500;color:var(--dsw-alias-label-primary)}',
+      '.dsh-subagent-bridge-cfg{display:flex;flex-direction:column;gap:8px;padding:12px 14px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:12px}',
       '.dsh-subagent-bridge-cfg-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary)}',
       '.dsh-subagent-bridge-cfg-row{display:flex;align-items:center;gap:8px}',
       '.dsh-subagent-bridge-cfg-input{flex:1 1 auto;min-width:0;font:inherit;font-size:12px;padding:4px 6px;border:1px solid var(--dsw-alias-border-l1);border-radius:4px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}',
@@ -332,7 +334,8 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = React.useState(false);
       const status = safeText(task.status);
       const isCompleted = status === 'completed';
-      const isFailed = status === 'failed';
+      // failed 与 cancelled 都以 error 字段承载说明（取消原因），一并展示
+      const isFailed = status === 'failed' || status === 'cancelled';
       const answer = isCompleted ? safeText(task.answer) : '';
       const error = isFailed ? safeText(task.error) : '';
       const sessionId = task.sessionId == null ? '' : safeText(task.sessionId);
@@ -436,11 +439,10 @@ window.__ModuleLoader__.load({
       }, children);
     }
 
-    // 使用指引（页面顶部，可折叠）：默认"无运行任务时展开、有任务时折叠"，
-    // 由 PanelMain 通过 open/onToggle 控制；标题行始终可点。
+    // 使用指引块（设置页分区内）：三步说明 + 安装提示词 + 手动注册命令。
     // info 不可达时仍渲染标题与三步说明，仅省略依赖 mcpUrl 的复制块。
     // 复制成功 2 秒后回弹为"复制"。
-    function ConnectHint({ t, open, onToggle }) {
+    function ConnectHint({ t }) {
       const [mcpUrl, setMcpUrl] = React.useState('');
       const [copyStates, setCopyStates] = React.useState({ cmd: 'copy', prompt: 'copy' });
       const timerRef = React.useRef({});
@@ -506,25 +508,8 @@ window.__ModuleLoader__.load({
         }, state === 'copied' ? t('copied') : state === 'copyFailed' ? t('copyFailed') : t('copy'));
       }
 
-      // 折叠/展开共用标题行：箭头 + 标题，整行可点
-      const titleRow = h('button', {
-        type: 'button',
-        className: 'dsh-subagent-bridge-connect-toggle',
-        'aria-expanded': open,
-        title: open ? t('hideGuide') : t('showGuide'),
-        onClick: onToggle,
-      },
-        h('span', { 'aria-hidden': true, className: 'dsh-subagent-bridge-chevron' }, open ? '▾' : '▸'),
-        t('connectTitle'),
-      );
-
-      if (!open) {
-        return h('div', {
-          className: 'dsh-subagent-bridge-connect dsh-subagent-bridge-connect-folded',
-        }, titleRow);
-      }
-
       const body = [
+        h('div', { key: 'title', className: 'dsh-subagent-bridge-connect-title' }, t('connectTitle')),
         // 使用流程三步概览
         h('div', { key: 'usage-title', className: 'dsh-subagent-bridge-connect-sub' }, t('usageTitle')),
         h('div', { key: 'step1', className: 'dsh-subagent-bridge-connect-hint' }, t('usageStep1')),
@@ -548,7 +533,7 @@ window.__ModuleLoader__.load({
           ),
         );
       }
-      return h('div', { className: 'dsh-subagent-bridge-connect' }, titleRow, body);
+      return h('div', { className: 'dsh-subagent-bridge-connect' }, body);
     }
 
     // 数据轮询 hook：2500ms 轮询 /tasks，页面不可见时暂停，恢复可见立即补一次。
@@ -622,7 +607,7 @@ window.__ModuleLoader__.load({
       });
       const history = tasks.filter(function (task) {
         const status = safeText(task.status);
-        return status === 'completed' || status === 'failed';
+        return status === 'completed' || status === 'failed' || status === 'cancelled';
       }).slice(0, MAX_HISTORY);
 
       // key 优先用任务 id；id 缺失时用索引兜底，避免 React 的 key 警告。
@@ -650,13 +635,6 @@ window.__ModuleLoader__.load({
         ? state.tasks.filter(function (task) { return isActive(safeText(task.status)); })
         : [];
 
-      // 使用指引折叠状态：默认"无运行任务时展开、有任务时折叠"；
-      // 用户手动切换一次后保持其选择，直到任务有无状态变化时恢复自动。
-      const noRunning = running.length === 0;
-      const [guidePinned, setGuidePinned] = React.useState(null);
-      React.useEffect(function () { setGuidePinned(null); }, [noRunning]);
-      const guideOpen = guidePinned !== null ? guidePinned : noRunning;
-
       const countLabel = running.length === 1
         ? t('runningOne')
         // t 若已原生替换 {count} 则 interpolate 无操作；否则在此兜底替换
@@ -672,15 +650,7 @@ window.__ModuleLoader__.load({
                 countLabel)
             : null,
         ),
-        // 使用指引在顶部：无任务时展开，有任务时折叠，标题行可点击切换
-        h(ConnectHint, {
-          key: 'guide',
-          t: t,
-          open: guideOpen,
-          onToggle: function () { setGuidePinned(!guideOpen); },
-        }),
-        // 子代理模型设置：面板内直接可配（插件详情页也有同一表单）
-        h(AgentModelConfig, { key: 'cfg', view: 'page' }),
+        // 面板只显示任务列表；模型配置与使用指引在"设置 → DSH 子代理"分区
         h('div', { className: 'dsh-subagent-bridge-page-list', role: 'list', 'aria-label': t('title') },
           taskListChildren(state, t),
         ),
@@ -708,16 +678,14 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /* ==================== 设置：子代理模型（bundle 详情页） ==================== */
+    /* ================ 设置：DSH 设置对话框的"DSH 子代理"分区 ================ */
 
-    // bundle 详情页的配置表单：读取/保存"子代理模型"覆盖（provider/model 或空）。
-    // view='summary' 渲染列表页一行简述；view='page' 渲染完整表单。
+    // 子代理模型配置卡：读取/保存"子代理模型"覆盖（provider/model 或空）。
     // 数据走 Host 的 /config 路由；可用模型列表由 Host 从宿主用户 patch 解析。
-    function AgentModelConfig({ view }) {
+    function ModelConfig() {
       const t = localeApi.t;
       useStoreOrNoop(localeApi.subscribe || noopSubscribe, localeApi.getSnapshot || nullSnapshot);
 
-      const [loaded, setLoaded] = React.useState(false);
       const [agentModel, setAgentModel] = React.useState('');
       const [providers, setProviders] = React.useState([]);
       const [saveState, setSaveState] = React.useState('idle'); // idle | saving | saved | error
@@ -736,11 +704,8 @@ window.__ModuleLoader__.load({
             if (!alive) return;
             setAgentModel(typeof data.agentModel === 'string' ? data.agentModel : '');
             setProviders(Array.isArray(data.providers) ? data.providers : []);
-            setLoaded(true);
           })
-          .catch(function () {
-            if (alive) setLoaded(true); // 拿不到配置也渲染表单（错误态可重试）
-          });
+          .catch(function () { /* 拿不到配置也渲染表单（错误态可重试） */ });
         return function () {
           alive = false;
           controller.abort();
@@ -768,12 +733,6 @@ window.__ModuleLoader__.load({
           .catch(function () { setSaveState('error'); });
       }
 
-      // summary：bundle 列表页一行简述（未加载完给占位）
-      if (view === 'summary') {
-        return h('div', { className: 'dsh-subagent-bridge-cfg-hint' },
-          t('configTitle') + ': ' + (loaded ? (agentModel || t('configFollow')) : '…'));
-      }
-
       const knownValues = [];
       providers.forEach(function (p) {
         p.models.forEach(function (m) {
@@ -788,7 +747,7 @@ window.__ModuleLoader__.load({
         onClick: function () { save(manualText.trim()); },
       }, saveState === 'saving' ? '…' : t('configSave'));
 
-      // page：完整表单。可用模型来自宿主用户 patch 解析；解析不到（或当前配置
+      // 可用模型来自宿主用户 patch 解析；解析不到（或当前配置
       // 不在列表里）退化为手填输入框。
       return h('div', { className: 'dsh-subagent-bridge-cfg' },
         h('div', { className: 'dsh-subagent-bridge-cfg-title' }, t('configTitle')),
@@ -820,6 +779,20 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // DSH 设置对话框的"DSH 子代理"分区（settings.section）：模型配置 + 使用指引。
+    // 布局对齐官方设置页（max-width 720px、主题 token）；props 里仅 close 由
+    // 宿主外壳提供，本页不使用。
+    function SettingsSection() {
+      const t = localeApi.t;
+      useStoreOrNoop(localeApi.subscribe || noopSubscribe, localeApi.getSnapshot || nullSnapshot);
+      return h('div', { className: 'dsh-subagent-bridge-settings' },
+        h('style', null, CSS),
+        h('h3', { className: 'dsh-subagent-bridge-settings-title' }, t('title')),
+        h(ModelConfig, { key: 'model' }),
+        h(ConnectHint, { key: 'guide', t: t }),
+      );
+    }
+
     /* ============================ 插件挂载 ============================ */
 
     return {
@@ -842,12 +815,14 @@ window.__ModuleLoader__.load({
             key: PANEL_KEY,
           }, PanelMain);
         });
-        // 设置：bundle 详情页的配置表单（key = 包名；summary 列表页简述）
-        ctx.slots.inject(PLUGIN_CONFIG_SLOT, function () {
+        // 设置对话框分区"DSH 子代理"：模型配置 + 使用指引（与官方分区同款注册）
+        ctx.slots.inject('settings.section', function () {
           return ctx.slots.register({
-            name: PLUGIN_CONFIG_SLOT,
-            key: PLUGIN_PACKAGE,
-          }, AgentModelConfig);
+            name: 'settings.section',
+            id: PANEL_KEY,
+            order: 40,
+            label: function () { return localeApi.t('title'); },
+          }, SettingsSection);
         });
       },
     };

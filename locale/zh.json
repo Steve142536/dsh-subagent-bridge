@@ -15,6 +15,7 @@
     "statusRunning": "运行中",
     "statusCompleted": "已完成",
     "statusFailed": "失败",
+    "statusCancelled": "已取消",
     "connectTitle": "在 Codex 中把 DSH 当作子代理使用",
     "showGuide": "展开使用说明",
     "hideGuide": "收起使用说明",

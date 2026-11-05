@@ -15,6 +15,7 @@
     "statusRunning": "Running",
     "statusCompleted": "Completed",
     "statusFailed": "Failed",
+    "statusCancelled": "Cancelled",
     "connectTitle": "Use DSH as a subagent in Codex",
     "showGuide": "Show usage guide",
     "hideGuide": "Hide usage guide",
