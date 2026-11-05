@@ -428,6 +428,11 @@ export function apply(ctx, config) {
     historyLimit: clampInt(raw?.historyLimit, 200, 10, 1000),
   });
   let limits = clampLimits(readUserConfig());
+  // 子代理沙箱权限：'workspace'（工作区沙箱，默认）| 'full'（完全权限）。
+  // 完全权限通过 DSH_PERMISSION_MODE=danger-full-access 注入 headless 子进程。
+  const POLICIES = new Set(['workspace', 'full']);
+  const readPolicy = (value) => (POLICIES.has(value) ? value : 'workspace');
+  let agentPolicy = readPolicy(readUserConfig().agentPolicy);
 
   const webServer = ctx.webServer; // 由 patch 行的 inject: [webServer] 注入
   if (!webServer || typeof webServer.register !== 'function') {
@@ -761,7 +766,16 @@ export function apply(ctx, config) {
     let child;
     try {
       const spawnOptions = {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        // DSH_PERMISSION_MODE 是 headless 模板 sandbox-policy 的原生出口：
+        // mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'。
+        // 'workspace-write'（默认）= 工作区沙箱，工作区外的访问（WSL/Docker
+        // 等）会被拦截；'danger-full-access' = 完全权限，设置页可切换，
+        // 保存后对新启动的任务生效（运行中的任务不受影响）。
+        env: {
+          ...process.env,
+          ELECTRON_RUN_AS_NODE: '1',
+          DSH_PERMISSION_MODE: agentPolicy === 'full' ? 'danger-full-access' : 'workspace-write',
+        },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
       };
@@ -1367,11 +1381,12 @@ export function apply(ctx, config) {
           });
           return;
         }
-        // 设置页读取：子代理模型 + 运行限额 + 可用模型列表（从宿主用户 patch 解析）
+        // 设置页读取：子代理模型 + 沙箱权限 + 运行限额 + 可用模型列表（从宿主用户 patch 解析）
         if (rest === '/config') {
           const saved = readUserConfig();
           sendJson(res, 200, {
             agentModel: typeof saved.agentModel === 'string' ? saved.agentModel : '',
+            agentPolicy,
             limits,
             providers: availableModels(),
             agentModelConfigPath: configFilePath,
@@ -1409,6 +1424,14 @@ export function apply(ctx, config) {
           }
           patchObj.agentModel = agentModel;
         }
+        if (Object.hasOwn(body, 'agentPolicy')) {
+          if (!POLICIES.has(body.agentPolicy)) {
+            sendJson(res, 400, { error: "agentPolicy must be 'workspace' or 'full'" });
+            return;
+          }
+          patchObj.agentPolicy = body.agentPolicy;
+          agentPolicy = body.agentPolicy; // 热生效：之后启动的任务用新权限
+        }
         if (
           Object.hasOwn(body, 'maxConcurrent') ||
           Object.hasOwn(body, 'maxTaskSeconds') ||
@@ -1432,6 +1455,7 @@ export function apply(ctx, config) {
         sendJson(res, 200, {
           ok: true,
           agentModel: typeof saved.agentModel === 'string' ? saved.agentModel : '',
+          agentPolicy,
           limits,
         });
         return;

@@ -59,6 +59,10 @@
     "limitsHint": "保存后立即生效（无需重启 DSH）。超出并发上限的任务排队等待；超时到点的任务判为失败。",
     "limitsInvalidEmpty": "输入不能为空",
     "limitsInvalidRange": "需为 {min}-{max} 之间的整数",
+    "policyLabel": "子代理权限",
+    "policyWorkspace": "工作区沙箱（推荐）",
+    "policyFull": "完全权限",
+    "policyHint": "工作区沙箱下子代理只能写工作区内的文件，访问 WSL/Docker 等会被拦截；完全权限解除全部限制，子代理可访问本机任意资源，请仅在自己信任的环境开启。切换后对新任务生效。",
     "unreachable": "桥接不可用"
   }
 }

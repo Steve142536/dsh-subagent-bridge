@@ -85,6 +85,7 @@ DSH 设置对话框 →"DSH 子代理"分区，保存到 `~/.dsh/subagent-bridge
 | 同时运行子代理上限 | `8`（1–64） | 超出后排队 |
 | 单任务超时（秒） | `3600`（60–604800） | 超时判为失败 |
 | 历史任务保留条数 | `200`（10–1000） | 面板与 `list_tasks` 保留的历史任务条数 |
+| 子代理权限 | 工作区沙箱 | `工作区沙箱`：子代理只能写工作区内文件，访问 WSL/Docker 等会被拦截；`完全权限`：解除全部限制（通过 `DSH_PERMISSION_MODE=danger-full-access` 注入 headless 子进程），子代理可访问本机任意资源。切换后对新任务生效 |
 
 ### cordis.patch.yml 的 config（仅 routePath）
 

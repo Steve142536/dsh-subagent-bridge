@@ -161,6 +161,10 @@ window.__ModuleLoader__.load({
         limitsHint: '保存后立即生效（无需重启 DSH）。超出并发上限的任务排队等待；超时到点的任务判为失败。',
         limitsInvalidEmpty: '输入不能为空',
         limitsInvalidRange: '需为 {min}-{max} 之间的整数',
+        policyLabel: '子代理权限',
+        policyWorkspace: '工作区沙箱（推荐）',
+        policyFull: '完全权限',
+        policyHint: '工作区沙箱下子代理只能写工作区内的文件，访问 WSL/Docker 等会被拦截；完全权限解除全部限制，子代理可访问本机任意资源，请仅在自己信任的环境开启。切换后对新任务生效。',
         unreachable: '桥接不可用',
       },
       en: {
@@ -219,6 +223,10 @@ window.__ModuleLoader__.load({
         limitsHint: 'Saved changes take effect immediately (no DSH restart needed). Tasks above the concurrency cap queue up; tasks past the timeout fail.',
         limitsInvalidEmpty: 'Input cannot be empty',
         limitsInvalidRange: 'Must be an integer between {min} and {max}',
+        policyLabel: 'Subagent permission',
+        policyWorkspace: 'Workspace sandbox (recommended)',
+        policyFull: 'Full access',
+        policyHint: 'With the workspace sandbox the subagent can only write inside the workspace; accessing WSL/Docker etc. is blocked. Full access removes all limits — the subagent can reach any local resource, so enable it only on machines you trust. Applies to tasks started after the change.',
         unreachable: 'Bridge unavailable',
       },
     };
@@ -885,6 +893,7 @@ window.__ModuleLoader__.load({
       const t = localeApi.t;
       useStoreOrNoop(localeApi.subscribe || noopSubscribe, localeApi.getSnapshot || nullSnapshot);
       const [values, setValues] = React.useState({ maxConcurrent: '', maxTaskSeconds: '', historyLimit: '' });
+      const [policy, setPolicy] = React.useState('workspace');
       const [saveState, setSaveState] = React.useState('idle');
       const timerRef = React.useRef(null);
       const aliveRef = React.useRef(true); // 异步回调的卸载保护
@@ -899,12 +908,17 @@ window.__ModuleLoader__.load({
             return res.json();
           })
           .then(function (data) {
-            if (!alive || !data || !data.limits) return;
-            setValues({
-              maxConcurrent: String(data.limits.maxConcurrent ?? ''),
-              maxTaskSeconds: String(data.limits.maxTaskSeconds ?? ''),
-              historyLimit: String(data.limits.historyLimit ?? ''),
-            });
+            if (!alive || !data) return;
+            if (data.limits) {
+              setValues({
+                maxConcurrent: String(data.limits.maxConcurrent ?? ''),
+                maxTaskSeconds: String(data.limits.maxTaskSeconds ?? ''),
+                historyLimit: String(data.limits.historyLimit ?? ''),
+              });
+            }
+            if (data.agentPolicy === 'workspace' || data.agentPolicy === 'full') {
+              setPolicy(data.agentPolicy);
+            }
           })
           .catch(function () { /* 拿不到现值就保持空输入，用户可手填 */ });
         return function () {
@@ -942,6 +956,7 @@ window.__ModuleLoader__.load({
             maxConcurrent: Number(values.maxConcurrent),
             maxTaskSeconds: Number(values.maxTaskSeconds),
             historyLimit: Number(values.historyLimit),
+            agentPolicy: policy,
           }),
         })
           .then(function (res) {
@@ -957,6 +972,9 @@ window.__ModuleLoader__.load({
                 maxTaskSeconds: String(data.limits.maxTaskSeconds),
                 historyLimit: String(data.limits.historyLimit),
               });
+            }
+            if (data && (data.agentPolicy === 'workspace' || data.agentPolicy === 'full')) {
+              setPolicy(data.agentPolicy);
             }
             setSaveState('saved');
             if (timerRef.current) clearTimeout(timerRef.current);
@@ -1001,6 +1019,17 @@ window.__ModuleLoader__.load({
         field('maxConcurrent', t('limitConcurrent')),
         field('maxTaskSeconds', t('limitTaskSeconds')),
         field('historyLimit', t('limitHistory')),
+        h('label', { className: 'dsh-subagent-bridge-limits-row' },
+          h('span', { className: 'dsh-subagent-bridge-limits-label' }, t('policyLabel')),
+          h('select', {
+            className: 'dsh-subagent-bridge-cfg-input dsh-subagent-bridge-limits-input',
+            value: policy,
+            onChange: function (event) { setPolicy(event.target.value); },
+          },
+            h('option', { key: 'workspace', value: 'workspace' }, t('policyWorkspace')),
+            h('option', { key: 'full', value: 'full' }, t('policyFull')),
+          ),
+        ),
         h('div', { className: 'dsh-subagent-bridge-cfg-row' },
           h('button', {
             type: 'button',
@@ -1015,6 +1044,7 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'dsh-subagent-bridge-cfg-hint dsh-subagent-bridge-detail-failed' }, invalidText)
           : null,
         h('div', { className: 'dsh-subagent-bridge-cfg-hint' }, t('limitsHint')),
+        h('div', { className: 'dsh-subagent-bridge-cfg-hint' }, t('policyHint')),
       );
     }
 

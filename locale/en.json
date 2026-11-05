@@ -59,6 +59,10 @@
     "limitsHint": "Saved changes take effect immediately (no DSH restart needed). Tasks above the concurrency cap queue up; tasks past the timeout fail.",
     "limitsInvalidEmpty": "Input cannot be empty",
     "limitsInvalidRange": "Must be an integer between {min} and {max}",
+    "policyLabel": "Subagent permission",
+    "policyWorkspace": "Workspace sandbox (recommended)",
+    "policyFull": "Full access",
+    "policyHint": "With the workspace sandbox the subagent can only write inside the workspace; accessing WSL/Docker etc. is blocked. Full access removes all limits — the subagent can reach any local resource, so enable it only on machines you trust. Applies to tasks started after the change.",
     "unreachable": "Bridge unavailable"
   }
 }
