@@ -3,9 +3,12 @@
 # 自动发现并加载 ./client 导出（platform: web）。
 # 运行限额（并发/超时/历史条数）与子代理模型不在 patch 里配置——
 # 在 DSH 设置对话框的"DSH 子代理"分区配置，保存在 ~/.dsh/subagent-bridge.config.json。
+# inject 注入两项服务：webServer（注册 HTTP 路由）、agentDefaultModel（读取
+# 宿主默认模型选择，供 reasoningEffort 解析默认模型）。桥接端点不做鉴权，
+# 不需要宿主 connection 请求准入能力。
 - insert:
     - id: dsh-subagent-bridge
       name: '@local/dsh-subagent-bridge'
-      inject: [webServer]
+      inject: [webServer, agentDefaultModel]
       config:
         routePath: /mcp/dsh-subagent

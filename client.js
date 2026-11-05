@@ -119,21 +119,22 @@ window.__ModuleLoader__.load({
         progressText: '轮 {turn} · 步 {step}',
         connectTitle: '在 Codex 中把 DSH 当作子代理使用',
         usageTitle: '如何使用',
-        usageStep1: '① 接入 Codex：把下面的提示词发给 DSH 助手，它会完成 MCP 注册，并把使用规则写进 Codex 系统提示词（~/.codex/AGENTS.md）。',
+        usageStep1: '① 接入 Codex：MCP 接入只需 URL，由桥接自动完成（自动同步端点 URL，仅在 ~/.codex/config.toml 已存在时执行，是否成功以本页“Codex 配置自动同步”状态为准，不需要任何令牌）；把下面的提示词发给 DSH 助手，由它把使用规则写进 Codex 系统提示词（~/.codex/AGENTS.md）。',
         usageStep2: '② 新开 Codex 会话直接说需求：所有任务由 DSH 子代理执行，Codex 主代理负责拆解、检查和验收。',
         usageStep3: '③ 本面板实时显示子代理运行状态，点击卡片查看详情（任务全文、结果、错误）。',
         installTitle: '第一步操作：复制提示词发给 DSH 助手',
-        installHint: '提示词已自动嵌入当前桥接地址，助手会按步骤代办：',
-        installPrompt: '请把 DSH 子代理桥接接入 Codex，端点：{url}\n一、注册 MCP 服务器：优先运行 codex mcp add dsh-subagent --url {url}；若 codex 不在 PATH，用桌面端自带 CLI（%LOCALAPPDATA%\\OpenAI\\Codex\\bin\\<版本号>\\codex.exe）执行同样命令；仍不行则直接编辑 ~/.codex/config.toml 追加以下两行：\n[mcp_servers.dsh-subagent]\nurl = "{url}"\n完成后用 codex mcp get dsh-subagent 验证 enabled: true。\n二、在 ~/.codex/AGENTS.md 末尾追加以下使用规则（文件不存在则创建）：\n## DSH 子代理使用规则\n- 所有任务请使用 DSH 子代理，主代理负责检查和验收。\n- 子代理没有生成图片的能力，所有生成图像的能力交给主代理（生成图像的任务由主代理自己完成）。\n- 委托时把任务描述写全（文件路径、上下文、验收标准写进 task）；验收不通过时给出具体修改意见，再次委托子代理修改。\n三、两步完成后告知用户：新开 Codex 会话即可使用。',
-        connectHint: '备选：手动在 Codex 终端执行注册命令：',
-        syncTitle: 'Codex 端点自动同步',
-        syncNote: 'DSH 每次启动端口都会变化；桥接启动时会自动把当前端点写入 Codex 配置（~/.codex/config.toml），因此重启 DSH 后无需手动重新注册，新开 Codex 会话即可使用。',
+        installHint: '提示词已自动嵌入当前桥接地址（接入只需 URL，不含任何令牌），助手会按步骤代办：',
+        installPrompt: '请把 DSH 子代理桥接接入 Codex，端点：{url}\n一、MCP 注册由桥接自动完成：在 ~/.codex/config.toml 已存在的前提下，桥接会把该文件 [mcp_servers.dsh-subagent] 段的 url 刷新为当前端点（该段不存在时自动追加），你无需也不要执行 codex mcp add 或手动编辑 config.toml；接入只需 URL，不需要任何令牌或请求头。该文件不存在时同步会跳过（请提示用户先安装并运行一次 Codex 生成配置文件，再重启 DSH 重试）；若接入不通，请提示用户到 DSH 设置的“DSH 子代理”分区查看同步状态、检查配置后重启 DSH 重试。\n二、旧授权头说明：该段若留有旧版本写入的 http_headers（Authorization）会原样保留，桥接不会覆盖或删除；桥接服务端已不校验该头，无需读取、填写或清理任何令牌。\n三、端口变动：DSH 每次启动端口都会变化，桥接会自动把新端点写入 config.toml；端口变化后需要重载 Codex（新开会话或重载 MCP 配置）才会按新地址连接。\n四、在 ~/.codex/AGENTS.md 末尾追加以下使用规则（文件不存在则创建）：\n## DSH 子代理使用规则\n- 所有任务请使用 DSH 子代理，主代理负责检查和验收。\n- 子代理没有生成图片的能力，所有生成图像的能力交给主代理（生成图像的任务由主代理自己完成）。\n- 委托时把任务描述写全（文件路径、上下文、验收标准写进 task）；验收不通过时给出具体修改意见，再次委托子代理修改。\n五、完成后告知用户：新开 Codex 会话即可使用。',
+        connectHint: '无需手动注册：MCP 接入只需 URL，端点由桥接自动同步（是否已写入以同步状态显示为准）；DSH 端口变动后桥接会自动更新 URL，但需要重载 Codex 会话才能生效。',
+        syncTitle: 'Codex 配置自动同步',
+        syncNote: 'DSH 每次启动端口都会变化；桥接启动时会自动把当前端点 URL 写入 Codex 配置（~/.codex/config.toml）的 [mcp_servers.dsh-subagent] 段。同步只更新 url 行，不覆盖该段已有配置（旧版本写入的 Authorization 授权头会原样保留，服务端已忽略它，接入不需要任何令牌）；该同步仅在文件已存在时执行，文件不存在则跳过（视为未安装 Codex，不会写入注册）。是否成功以下方状态为准；DSH 端口变化后需要重载 Codex 会话才能按新地址连接，重启 DSH 后无需手动重新注册。',
         syncPending: '等待 DSH 端口就绪…',
-        syncUnchanged: '端点已是最新',
-        syncUpdated: '已写入当前端点',
-        syncCreated: '已自动注册到 Codex',
-        syncSkipped: '未找到 ~/.codex/config.toml（本机未安装 Codex，已跳过）',
+        syncUnchanged: '配置已是最新',
+        syncUpdated: '已写入当前端点 URL',
+        syncCreated: '已自动写入 Codex 配置',
+        syncSkipped: '未找到 ~/.codex/config.toml，自动同步已跳过（视为未安装 Codex，不会写入注册）；若本机已安装 Codex，请先运行一次以生成配置文件，再重启 DSH 重试',
         syncFailed: '同步失败',
+        syncFailedHint: '请检查 Codex 配置（~/.codex/config.toml）后重启 DSH 重试；自动同步只更新端点 URL，不会覆盖该段已有配置，出现错误提示时按提示手动处理对应行即可。',
         copy: '复制',
         copied: '已复制',
         copyFailed: '复制失败',
@@ -181,21 +182,22 @@ window.__ModuleLoader__.load({
         progressText: 'turn {turn} · step {step}',
         connectTitle: 'Use DSH as a subagent in Codex',
         usageTitle: 'How to use',
-        usageStep1: '1. Connect Codex: send the prompt below to the DSH assistant; it registers the MCP server and adds the usage rules to the Codex instructions (~/.codex/AGENTS.md).',
+        usageStep1: '1. Connect Codex: MCP integration only needs a URL and is wired up by the bridge automatically (it syncs the endpoint URL; this only runs when ~/.codex/config.toml already exists — check the "Automatic Codex config sync" status below; no token is needed); send the prompt below to the DSH assistant so it adds the usage rules to the Codex instructions (~/.codex/AGENTS.md).',
         usageStep2: '2. Open a new Codex session and state your task: all tasks run via DSH subagents while the Codex main agent decomposes, checks, and accepts.',
         usageStep3: '3. This panel shows subagent status in real time; click a card for details (full task, result, errors).',
         installTitle: 'Step one: copy the prompt and send it to the DSH assistant',
-        installHint: 'The current bridge URL is already embedded; the assistant handles the rest:',
-        installPrompt: 'Please wire the DSH subagent bridge into Codex, endpoint: {url}\n1. Register the MCP server: run codex mcp add dsh-subagent --url {url}; if codex is not on PATH, use the desktop-bundled CLI (%LOCALAPPDATA%\\OpenAI\\Codex\\bin\\<version>\\codex.exe) with the same command; otherwise edit ~/.codex/config.toml and append:\n[mcp_servers.dsh-subagent]\nurl = "{url}"\nVerify with codex mcp get dsh-subagent (enabled: true).\n2. Append the following usage rules to ~/.codex/AGENTS.md (create the file if missing):\n## DSH subagent usage rules\n- Use DSH subagents for all tasks; the main agent checks and accepts the results.\n- Subagents cannot generate images: all image generation stays with the main agent.\n- Write self-contained task descriptions (paths, context, acceptance criteria in task); on rejection, give concrete revision notes and delegate again.\n3. When both steps are done, tell the user a new Codex session picks it up.',
-        connectHint: 'Fallback: run the registration command in a Codex terminal:',
-        syncTitle: 'Automatic Codex endpoint sync',
-        syncNote: "The DSH port changes on every start; the bridge writes the current endpoint into the Codex config (~/.codex/config.toml) at startup, so after restarting DSH you don't need to re-register — just open a new Codex session.",
+        installHint: 'The current bridge URL is already embedded (a URL is all the integration needs — no token involved); the assistant handles the rest:',
+        installPrompt: 'Please wire the DSH subagent bridge into Codex, endpoint: {url}\n1. MCP registration is done by the bridge: provided ~/.codex/config.toml already exists, it refreshes the url line of the [mcp_servers.dsh-subagent] section to the current endpoint (appending the section if missing). Do not run codex mcp add or edit config.toml by hand; the integration only needs a URL — no token or request header required. If the file does not exist the sync is skipped (tell the user to install and run Codex once to create the config file, then restart DSH); if the connection does not work, tell the user to check the sync status in the "DSH Subagents" section of the DSH settings, fix the config, and restart DSH.\n2. Legacy authorization header: if the section still carries an http_headers (Authorization) entry written by an older version, it is kept as is — the bridge neither overwrites nor removes it; the bridge server no longer validates that header, so never read, fill in, or clean up any token.\n3. Port changes: the DSH port changes on every start and the bridge writes the new endpoint into config.toml automatically; after a port change Codex must be reloaded (a new session or reloading the MCP config) to connect to the new address.\n4. Append the following usage rules to ~/.codex/AGENTS.md (create the file if missing):\n## DSH subagent usage rules\n- Use DSH subagents for all tasks; the main agent checks and accepts the results.\n- Subagents cannot generate images: all image generation stays with the main agent.\n- Write self-contained task descriptions (paths, context, acceptance criteria in task); on rejection, give concrete revision notes and delegate again.\n5. When done, tell the user a new Codex session picks it up.',
+        connectHint: 'No manual registration needed: MCP integration only needs a URL, and the bridge syncs the endpoint automatically (whether it was written is shown by the sync status). After the DSH port changes the bridge updates the URL, but Codex needs a reload for it to take effect.',
+        syncTitle: 'Automatic Codex config sync',
+        syncNote: "The DSH port changes on every start; the bridge writes the current endpoint URL into the [mcp_servers.dsh-subagent] section of the Codex config (~/.codex/config.toml) at startup. The sync only updates the url line and never overwrites other entries of the section (an Authorization header left over from an older version is kept as is — the server ignores it, and no token is needed); it only runs when that file already exists and is skipped otherwise (Codex assumed not installed, nothing is written). Check the status below; after a DSH port change Codex needs a reload to connect to the new address — restarting DSH never requires re-registering by hand.",
         syncPending: 'Waiting for the DSH port to be ready…',
-        syncUnchanged: 'Endpoint already up to date',
-        syncUpdated: 'Current endpoint written',
-        syncCreated: 'Registered into Codex automatically',
-        syncSkipped: '~/.codex/config.toml not found (Codex not installed; skipped)',
+        syncUnchanged: 'Config already up to date',
+        syncUpdated: 'Current endpoint URL written',
+        syncCreated: 'Written into the Codex config automatically',
+        syncSkipped: '~/.codex/config.toml not found; sync skipped (Codex assumed not installed, nothing was written). If Codex is installed, run it once to create the config file and restart DSH to retry',
         syncFailed: 'Sync failed',
+        syncFailedHint: 'Check the Codex config (~/.codex/config.toml) and restart DSH to retry; the sync only updates the endpoint URL and never overwrites other entries of the section — follow the error message to fix the affected line by hand.',
         copy: 'Copy',
         copied: 'Copied',
         copyFailed: 'Copy failed',
@@ -335,12 +337,11 @@ window.__ModuleLoader__.load({
       // 全文块：左侧竖线标识引用区；超高滚动，避免超长结果撑爆面板
       '.dsh-subagent-bridge-full-text{font-size:11px;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow-y:auto;padding-left:6px;border-left:2px solid var(--dsw-alias-border-l2)}',
       '.dsh-subagent-bridge-detail-failed{color:var(--dsw-alias-state-error-primary)}',
-      // 使用指引块（设置页分区内）：三步说明 + 提示词 + 手动命令
+      // 使用指引块（设置页分区内）：三步说明 + 提示词 + 同步状态
+      // （手动注册命令样式已移除：MCP 接入只需 URL，接入配置由桥接自动同步）
       '.dsh-subagent-bridge-connect{display:flex;flex-direction:column;gap:4px;padding:12px 14px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:12px}',
       '.dsh-subagent-bridge-connect-title{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary)}',
       '.dsh-subagent-bridge-connect-hint{font-size:11px}',
-      '.dsh-subagent-bridge-command-row{display:flex;align-items:center;gap:6px;margin-top:2px}',
-      '.dsh-subagent-bridge-command{flex:1 1 auto;min-width:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;padding:4px 6px;border:1px solid var(--dsw-alias-border-l1);border-radius:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-primary)}',
       // "让 DSH 助手安装"分节：小标题 + 多行提示词块（等宽、可滚动）+ 复制按钮
       '.dsh-subagent-bridge-connect-sub{margin-top:2px;color:var(--dsw-alias-label-primary)}',
       '.dsh-subagent-bridge-prompt-row{display:flex;align-items:flex-start;gap:6px}',
@@ -481,13 +482,15 @@ window.__ModuleLoader__.load({
       }, children);
     }
 
-    // 使用指引块（设置页分区内）：三步说明 + 安装提示词 + 手动注册命令。
+    // 使用指引块（设置页分区内）：三步说明 + 安装提示词 + 同步状态。
+    // MCP 接入由桥接自动同步（仅端点 URL），因此不展示手动注册命令——
+    // 桥接鉴权已取消，接入只需 URL，不需要任何令牌或请求头。
     // info 不可达时仍渲染标题与三步说明，仅省略依赖 mcpUrl 的复制块。
     // 复制成功 2 秒后回弹为"复制"。
     function ConnectHint({ t }) {
       const [mcpUrl, setMcpUrl] = React.useState('');
       const [syncState, setSyncState] = React.useState(null);
-      const [copyStates, setCopyStates] = React.useState({ cmd: 'copy', prompt: 'copy' });
+      const [copyStates, setCopyStates] = React.useState({ prompt: 'copy' }); // 仅安装提示词有复制按钮
       const timerRef = React.useRef({});
       const aliveRef = React.useRef(true); // 异步回调的卸载保护
 
@@ -521,7 +524,6 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
-      const command = mcpUrl ? 'codex mcp add dsh-subagent --url ' + mcpUrl : '';
       // 显式把 url 传给 t：不依赖宿主 t 对"未提供参数的占位符"的缺省行为
       const prompt = mcpUrl ? safeText(t('installPrompt', { url: mcpUrl })) : '';
 
@@ -579,15 +581,12 @@ window.__ModuleLoader__.load({
             h('pre', { className: 'dsh-subagent-bridge-prompt' }, prompt),
             copyButton(prompt, 'prompt'),
           ),
-          // 备选：手动在 Codex 终端执行注册命令
+          // 接入说明：不提供手动注册命令——接入配置一律交给桥接自动同步，
+          // 桥接鉴权已取消，MCP 接入只需 URL，无需令牌
           h('div', { key: 'cmd-hint', className: 'dsh-subagent-bridge-connect-hint' }, t('connectHint')),
-          h('div', { key: 'cmd-row', className: 'dsh-subagent-bridge-command-row' },
-            h('code', { className: 'dsh-subagent-bridge-command', title: command }, command),
-            copyButton(command, 'cmd'),
-          ),
         );
       }
-      // 端点自动同步：说明 + 当前状态（来自 /info 的 codexSync）
+      // 配置自动同步：说明 + 当前状态（来自 /info 的 codexSync）
       body.push(h('div', { key: 'sync-note', className: 'dsh-subagent-bridge-connect-hint' }, t('syncNote')));
       if (syncState) {
         const statusText = {
@@ -603,6 +602,14 @@ window.__ModuleLoader__.load({
           className: 'dsh-subagent-bridge-connect-hint',
           title: safeText(syncState.configPath),
         }, t('syncTitle') + '：' + (statusText[syncState.status] || safeText(syncState.status))));
+        // 同步失败：保留上方失败状态（含原因），再补一条行动提示——
+        // 检查 Codex 配置后重启 DSH 重试（同步只更新端点 URL，不覆盖段内已有配置）。
+        if (syncState.status === 'failed') {
+          body.push(h('div', {
+            key: 'sync-failed-hint',
+            className: 'dsh-subagent-bridge-connect-hint dsh-subagent-bridge-detail-failed',
+          }, t('syncFailedHint')));
+        }
       }
       return h('div', { className: 'dsh-subagent-bridge-connect' }, body);
     }
