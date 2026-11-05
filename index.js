@@ -36,7 +36,7 @@ import { syncCodexConfigFile } from './codex-sync.js';
 // ---------- 常量 ----------
 const PROTOCOL_VERSION_DEFAULT = '2025-06-18';
 // 版本与 package.json 保持一致（package.json 由仓库统一维护）
-const SERVER_INFO = { name: 'dsh-subagent-bridge', version: '1.5.0' };
+const SERVER_INFO = { name: 'dsh-subagent-bridge', version: '1.6.0' };
 const MCP_INSTRUCTIONS =
   'Delegate tasks to DSH subagents. Start tasks and wait for results. Running tasks can receive messages over the control channel: send_message with mode "steer" (default) guides the agent at its next step of the current turn, while mode "followup" queues the message for the next turn after the current one; interrupt_task gracefully cancels the current round, the task then finishes as cancelled and its session can be continued with continue_task once the subprocess has exited. Use cancel_task for an immediate forced cancel, and continue_task for a finished session. Subagent permissions never inherit from the calling agent automatically: pass the restrictions a task needs via start_task permissionMode (Codex sandbox settings do not carry over), and optionally reasoningEffort to steer reasoning depth.';
 const BODY_LIMIT = 1024 * 1024;   // MCP 请求体上限 1MB，超限回 413
@@ -328,13 +328,6 @@ const TOOLS = [
           type: 'string',
           description: 'Absolute working directory for the subagent; defaults to the DSH workspace root.',
         },
-        timeoutSeconds: {
-          type: 'number',
-          description:
-            'Optional per-task timeout override in seconds (60-604800). Defaults to the bridge runtime limit configured in DSH settings.',
-          minimum: 60,
-          maximum: 604800,
-        },
         model: {
           type: 'string',
           description:
@@ -439,7 +432,7 @@ const TOOLS = [
   {
     name: 'continue_task',
     description:
-      'Continue a finished (completed, failed, or cancelled) DSH task that has a sessionId, in the same session. The new task inherits the previous model, timeout, and reasoningEffort, and runs under the previous task\'s snapshotted permission mode; a legacy task recorded without a snapshot is capped at the safe workspace-write mode. Optionally pass permissionMode equal to or lower than that inherited mode (and never above the current global DSH subagent permission) to run the continuation with tighter restrictions. If the inherited snapshot exceeds the current global permission and no lower permissionMode is passed, the call is rejected instead of silently downgrading. Permissions still do not inherit from the calling agent: pass suitable restrictions on the original start_task. Returns a new taskId; wait for that task. Queued or running tasks cannot be steered, and the call is rejected while the previous task\'s dsh process has not exited yet (e.g. right after cancel_task); retry shortly.',
+      'Continue a finished (completed, failed, or cancelled) DSH task that has a sessionId, in the same session. The new task inherits the previous model and reasoningEffort, and runs under the previous task\'s snapshotted permission mode; task runtime always uses the global maxTaskSeconds limit (per-task timeout overrides are no longer supported, including values recorded on legacy tasks). a legacy task recorded without a snapshot is capped at the safe workspace-write mode. Optionally pass permissionMode equal to or lower than that inherited mode (and never above the current global DSH subagent permission) to run the continuation with tighter restrictions. If the inherited snapshot exceeds the current global permission and no lower permissionMode is passed, the call is rejected instead of silently downgrading. Permissions still do not inherit from the calling agent: pass suitable restrictions on the original start_task. Returns a new taskId; wait for that task. Queued or running tasks cannot be steered, and the call is rejected while the previous task\'s dsh process has not exited yet (e.g. right after cancel_task); retry shortly.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -722,7 +715,7 @@ export function apply(ctx, config) {
                         // 指定 reasoningEffort 且未显式给 model 时，这里保存为
                         // 满足 overlay 需要而解析出的有效模型（全局 agentModel
                         // 或宿主默认选择），保证 overlay 一定能生成
-      timeoutSeconds: null, // 任务级超时覆盖（秒；null = 全局 limits）
+      timeoutSeconds: null, // 任务级超时已移除：新建任务为 null（旧历史值仅作记录），运行期限一律用全局 limits
       permissionMode: null, // 任务级权限快照（'read-only'|'workspace-write'|
                             // 'danger-full-access'）。start_task/continue_task
                             // 入队时固化"当时实际允许的权限"（显式传值或当时的
@@ -1038,10 +1031,12 @@ export function apply(ctx, config) {
     // 控制通道就绪后才把任务全文交给子进程执行
     child.stdin.end(t.task);
 
-    // 任务级超时（t.timeoutSeconds 优先，否则全局 limits）：到点强杀整棵
-    // 进程树（child.kill() 在 Windows 上杀不掉孙进程，孤儿会一直占着 stdio
+    // 任务运行期限只由启动时捕获的全局 limits.maxTaskSeconds 决定（任务级
+    // 超时已移除：t.timeoutSeconds 仅旧历史记录原样保留作历史事实，运行中的
+    // 新任务与续跑一律不采用它）：到点强杀整棵进程树
+    //（child.kill() 在 Windows 上杀不掉孙进程，孤儿会一直占着 stdio
     // 句柄导致 close 永不触发）；终态判定统一在 close 回调里做
-    const effectiveTimeoutSeconds = t.timeoutSeconds ?? limits.maxTaskSeconds;
+    const effectiveTimeoutSeconds = limits.maxTaskSeconds;
     t.timer = setTimeout(() => {
       t.timedOut = true;
       killTaskTree(child, true);
@@ -1176,8 +1171,11 @@ export function apply(ctx, config) {
       }
       if (t.timedOut) {
         finishRunning(t, 'failed', {
+          // 错误消息报告启动时捕获的 effectiveTimeoutSeconds（闭包引用），
+          // 不读当前的 limits.maxTaskSeconds——全局限额可在任务执行期间被
+          // 热修改，报告当前值会与实际杀进程的时限不一致
           error:
-            `task exceeded timeout (${t.timeoutSeconds ?? limits.maxTaskSeconds}s)` +
+            `task exceeded timeout (${effectiveTimeoutSeconds}s)` +
             (t.stderrTail ? `; ${t.stderrTail}` : ''),
         });
       } else if (code === 0 && t.gotFinal && !t.eventError) {
@@ -1455,6 +1453,11 @@ export function apply(ctx, config) {
         // 上面已校验：合法三值之一或 null（未指定/缺快照），非法值已抛错
         permissionMode: restoredPermissionMode,
         reasoningEffort: restoredReasoningEffort,
+        // 任务级超时已移除：恢复时把旧任务记录里的值（历史版本的任务级覆盖，
+        // 如 180 秒）按 asNumber 原样保留——它只是历史事实，持久化回写时绝不
+        // 改写；但运行期限与 continue_task 一律不采用该值（恢复出的任务永不
+        // 重跑，续跑任务的 timeoutSeconds 固定为 null），运行期限只由全局
+        // limits.maxTaskSeconds 决定
         timeoutSeconds: asNumber(entry.timeoutSeconds),
         progress: null,
         pid: asNumber(entry.pid),
@@ -1560,16 +1563,17 @@ export function apply(ctx, config) {
       }
       cwd = cwdInput;
     }
-    // 任务级超时覆盖（60-604800 秒）：不传或非法时回退全局 limits
-    let timeoutSeconds = null;
+    // 任务级超时已移除：任务运行期限一律由全局 limits.maxTaskSeconds 决定。
+    // schema 已不再暴露该参数；显式传入时明确报错（不静默忽略），让调用方
+    // 立刻知道任务级覆盖已不存在，而不是误以为覆盖生效
     if (args?.timeoutSeconds !== undefined) {
-      timeoutSeconds = clampInt(args.timeoutSeconds, 0, 60, 604800);
-      if (!timeoutSeconds) {
-        return {
-          isError: true,
-          payload: { error: 'arguments.timeoutSeconds must be an integer between 60 and 604800' },
-        };
-      }
+      return {
+        isError: true,
+        payload: {
+          error:
+            'start_task no longer accepts arguments.timeoutSeconds; task runtime always uses the global maxTaskSeconds limit configured in DSH settings',
+        },
+      };
     }
     // 任务级模型覆盖："provider/model"，字符白名单防 YAML 注入
     let model = null;
@@ -1652,7 +1656,8 @@ export function apply(ctx, config) {
       };
     }
     const t = createTask(task, cwd);
-    t.timeoutSeconds = timeoutSeconds;
+    // 任务级超时已移除：createTask 初始化 timeoutSeconds 为 null，
+    // 运行期限由 startTask 中的全局 limits.maxTaskSeconds 决定
     // effectiveModel：任务级显式覆盖，或为满足 reasoningEffort 解析出的有效模型
     //（null = 未指定推理力度且未指定模型，跟随全局/宿主默认）
     t.model = effectiveModel;
@@ -1971,7 +1976,8 @@ export function apply(ctx, config) {
   }
 
   // 复用已终态任务（completed/failed/cancelled，且子进程上报过 sessionId）的
-  // 持久化会话，另起任务执行追问；新任务继承前一任务的 model 与 timeoutSeconds。
+  // 持久化会话，另起任务执行追问；新任务继承前一任务的 model 与 reasoningEffort，
+  // 任务级超时已移除（续跑固定用全局 maxTaskSeconds）。
   // 同会话并发保护：cancel_task 已返回但原进程尚未退出（仍持有并发槽/会话）时
   // 不允许续跑；所有同 sessionId 的运行/排队任务也都阻止并发续跑。
   function toolContinueTask(args) {
@@ -1989,6 +1995,18 @@ export function apply(ctx, config) {
       return {
         isError: true,
         payload: { error: 'task has no sessionId; nothing to continue from' },
+      };
+    }
+    // 任务级超时已移除：显式传入 timeoutSeconds 时明确报错（不静默忽略），
+    // 续跑任务的运行期限一律由全局 limits.maxTaskSeconds 决定——即使旧任务
+    // 记录里固化过任务级超时，也绝不采用
+    if (args?.timeoutSeconds !== undefined) {
+      return {
+        isError: true,
+        payload: {
+          error:
+            'continue_task no longer accepts arguments.timeoutSeconds; task runtime always uses the global maxTaskSeconds limit configured in DSH settings',
+        },
       };
     }
     const message = typeof args?.message === 'string' ? args.message : '';
@@ -2082,12 +2100,14 @@ export function apply(ctx, config) {
       };
     }
     const next = createTask(message, previous.cwd, previous.sessionId);
-    // 继承前一任务的任务级覆盖：model、timeoutSeconds 与 reasoningEffort 原样
-    // 继承（reasoningEffort 与 model 配套存储，二者始终一致生效）；
+    // 继承前一任务的任务级覆盖：model 与 reasoningEffort 原样继承
+    //（reasoningEffort 与 model 配套存储，二者始终一致生效）。任务级超时已
+    // 移除：即使旧任务记录里固化过 timeoutSeconds（如历史版本留下的 180 秒），
+    // 续跑任务也固定为 null，运行期限一律由全局 limits.maxTaskSeconds 决定；
     // permissionMode 取上面收敛出的快照（显式降权值 / 继承快照 / 缺快照时的
     // 安全上限 workspace-write），启动时按它注入
     next.model = previous.model;
-    next.timeoutSeconds = previous.timeoutSeconds;
+    next.timeoutSeconds = null;
     next.permissionMode = effectiveMode;
     next.reasoningEffort = previous.reasoningEffort;
     queue.push(next.id);

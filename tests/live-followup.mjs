@@ -67,8 +67,8 @@ const TASK_MODEL = 'glm/glm-5.3-flash';
 const TASK_PERMISSION_WRITE = 'workspace-write';
 // 首轮任务里的等待秒数：给 followup 发送留出足够宽的"当前回合仍在进行"窗口
 const FIRST_TURN_SLEEP_SECONDS = 20;
-// 任务级超时（start_task 允许 60–604800 秒）
-const TASK_TIMEOUT_SECONDS = 300;
+// 任务运行期限只由全局 maxTaskSeconds 决定（任务级 timeoutSeconds 已移除，
+// start_task 显式传入会明确报错）
 
 // ---------- 超时预算 ----------
 const HOST_START_TIMEOUT_MS = 60_000;      // 隔离宿主启动（Electron Node + 插件激活）上限
@@ -665,7 +665,7 @@ function isTerminalStatus(status) {
 /**
  * 启动任务（start_task）并返回 taskId。
  * @param {McpClient} client MCP 客户端
- * @param {object} args start_task 参数（task/cwd/model/permissionMode/timeoutSeconds）
+ * @param {object} args start_task 参数（task/cwd/model/permissionMode；任务级 timeoutSeconds 已移除，运行期限用全局 maxTaskSeconds）
  * @param {string} label 日志标签
  * @returns {Promise<string>} taskId
  */
@@ -874,7 +874,6 @@ async function main() {
           cwd: workDir,
           model: TASK_MODEL,
           permissionMode: TASK_PERMISSION_WRITE,
-          timeoutSeconds: TASK_TIMEOUT_SECONDS,
         },
         'followup',
       );

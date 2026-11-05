@@ -759,7 +759,7 @@ async function waitForSessionReady(client, taskId, label) {
 /**
  * 启动任务（start_task）并返回 taskId。
  * @param {McpClient} client MCP 客户端
- * @param {object} args start_task 参数（task/cwd/model/permissionMode/timeoutSeconds）
+ * @param {object} args start_task 参数（task/cwd/model/permissionMode；任务级 timeoutSeconds 已移除，运行期限用全局 maxTaskSeconds）
  * @param {string} label 日志标签
  * @returns {Promise<string>} taskId
  */
@@ -1011,7 +1011,6 @@ async function main() {
           cwd: workDir,
           model: TASK_MODEL,
           permissionMode: TASK_PERMISSION_WRITE,
-          timeoutSeconds: 300,
         },
         'steer',
       );
@@ -1057,7 +1056,6 @@ async function main() {
           cwd: workDir,
           model: TASK_MODEL,
           permissionMode: TASK_PERMISSION_WRITE,
-          timeoutSeconds: 300,
         },
         'interrupt',
       );
@@ -1128,7 +1126,6 @@ async function main() {
           cwd: workDir,
           model: TASK_MODEL,
           permissionMode: 'read-only', // 只读档位：低于全局 workspace-write，允许指定
-          timeoutSeconds: 300,
         },
         'readonly',
       );

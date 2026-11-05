@@ -17,7 +17,6 @@
 ### 七个 MCP 工具
 
 - `start_task`：启动一个全新 headless DSH 子代理执行任务，立即返回 `taskId`（`cwd` 必须是已存在的绝对路径目录，否则明确报错）。可选参数：
-  - `timeoutSeconds`：任务级超时（60–604800 秒），覆盖全局单任务超时；
   - `model`：任务级模型覆盖（`provider/model` 格式）；
   - `permissionMode`：任务级权限模式（见下文"权限模型"）；
   - `reasoningEffort`：可选推理力度提示（如 `low`/`medium`/`high`，具体取值取决于提供商；≤64 字符，仅字母/数字/点/下划线/连字符）。指定了它但没有任何可用模型来源时 `start_task` 明确报错，绝不静默丢弃该参数。
@@ -28,14 +27,14 @@
   排队中（还没有可寻址会话）与已结束的任务不能插话，会明确报错。
 - `interrupt_task`：温和中断**运行中**的任务——子代理取消当前回合（收件箱里尚未消费的消息保留），桥接等到回执确认后才收尾，任务按 `cancelled` 结束（注明温和中断原因）。子进程退出后可用 `continue_task` 续跑同一会话。排队中的任务不支持温和中断（用 `cancel_task`）。
 - `cancel_task`：取消排队或运行中的任务，任务立即进入 `cancelled`，`wait_task` 等待方即时获知；运行中的任务整棵进程树被强制终止。**取消后可恢复**：无论是强制取消还是温和中断，只要任务拿到过 sessionId 且子进程已退出，就能用 `continue_task` 续跑同一会话。
-- `continue_task`：向**已结束**（completed/failed/cancelled）且有 sessionId 的任务对应的同一 DSH 会话发送后续指令，返回新的 `taskId`。新任务继承前任务的模型、超时与推理力度；权限模式默认沿用前任务入队时快照的权限，也可传 `permissionMode` 进一步降权，但不得高于原任务的权限快照或当前 DSH 全局权限（绝不提权）；旧版本持久化、缺少权限快照的历史任务，续跑时以 `workspace-write` 为权限上限并有相应提示。原任务的 DSH 进程尚未退出时会拒绝（例如刚 `cancel_task` 完的短暂窗口），稍后重试。
+- `continue_task`：向**已结束**（completed/failed/cancelled）且有 sessionId 的任务对应的同一 DSH 会话发送后续指令，返回新的 `taskId`。新任务继承前任务的模型与推理力度（任务级超时已移除：即使旧任务记录里固化过 `timeoutSeconds`，续跑的运行期限也一律由全局 `maxTaskSeconds` 决定）；权限模式默认沿用前任务入队时快照的权限，也可传 `permissionMode` 进一步降权，但不得高于原任务的权限快照或当前 DSH 全局权限（绝不提权）；旧版本持久化、缺少权限快照的历史任务，续跑时以 `workspace-write` 为权限上限并有相应提示。原任务的 DSH 进程尚未退出时会拒绝（例如刚 `cancel_task` 完的短暂窗口），稍后重试。
 - `list_tasks`：列出近期任务（id、状态、摘要、耗时）。
 
 ### 执行模型
 
 - 每个任务 spawn 一个 headless DSH 进程（`--profile headless --patch <overlay> --json`），任务全文经 stdin 传入，逐行解析 JSON 事件（`session`/`status`/`final`/`error`）收集会话、进度与答案。终态判定在 stdio 全部收尾（`close` 事件）后进行：退出码 0 且收到过有效 `final` 且无 `error` 事件才算 `completed`，否则一律 `failed`。
 - 任务状态：`queued` → `running` → `completed` / `failed` / `cancelled`。
-- 超出 `maxConcurrent` 的任务排队执行（队列上限 200，超出明确报错）；单任务超时 `maxTaskSeconds` 判为失败；终态任务仅保留 `historyLimit` 条。
+- 超出 `maxConcurrent` 的任务排队执行（队列上限 200，超出明确报错）；单任务运行期限只由全局 `maxTaskSeconds` 决定（超时判为失败；任务级超时覆盖已移除，`start_task` 显式传入 `timeoutSeconds` 会被明确报错，旧任务记录里固化的值也不影响续跑）；终态任务仅保留 `historyLimit` 条。
 
 ### 任务与结果的持久化
 
@@ -132,7 +131,7 @@ DSH 设置对话框 →"DSH 子代理"分区，保存到 `~/.dsh/subagent-bridge
 | 历史任务保留条数 | `200`（10–1000） | 面板与 `list_tasks` 保留的历史任务条数 |
 | 子代理权限 | 工作区沙箱 | `工作区沙箱`：子代理只能写工作区内文件，访问 WSL/Docker 等会被拦截（对应 DSH `workspace-write`）；`完全权限`：解除全部限制（`danger-full-access`），子代理可访问本机任意资源。这是子代理权限的**默认来源（DSH 全局）**，与 Codex 自身的权限设置无关；切换后对新任务生效 |
 
-任务级可选参数（`start_task` 的 `permissionMode` 与 `reasoningEffort`，以及任务级 `model`/`timeoutSeconds` 覆盖）不在此配置，见"功能"一节。
+任务级可选参数（`start_task` 的 `permissionMode` 与 `reasoningEffort`，以及任务级 `model` 覆盖）不在此配置，见"功能"一节。任务级 `timeoutSeconds` 已移除：任务运行期限一律由全局 `maxTaskSeconds` 决定。
 
 ### cordis.patch.yml 的 config（仅 routePath）
 
