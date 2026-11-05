@@ -15,18 +15,18 @@
 
 ## 从 Git 仓库安装
 
-把本目录推送到 Git 仓库后，其他人可从 Git 安装：
+官方仓库：<https://github.com/Steve142536/dsh-subagent-bridge>
 
 方式 A（最稳）：克隆到本地，再按目录安装——
 
 ```bash
-git clone <仓库地址>
+git clone https://github.com/Steve142536/dsh-subagent-bridge.git
 cd dsh-subagent-bridge
 ```
 
 然后在 DSH 会话里让助手安装本地目录 `<克隆路径>`（见下一节第 3 步）。
 
-方式 B（一步到位）：直接用 Git 地址安装——在 DSH 会话里让助手用 plugin_manager 安装 `git+https://github.com/<你>/<仓库>.git`（可加 `#v1.0.0` 固定 tag）。若当前版本的插件管理不接受 git 地址，退回方式 A。
+方式 B（一步到位）：直接用 Git 地址安装——在 DSH 会话里让助手用 plugin_manager 安装 `git+https://github.com/Steve142536/dsh-subagent-bridge.git#v1.1.0`（tag 固定版本）。若当前版本的插件管理不接受 git 地址，退回方式 A。
 
 ## 安装到其他机器
 
