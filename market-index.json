@@ -43,6 +43,15 @@
             "url": "https://github.com/Steve142536/dsh-subagent-bridge",
             "commit": "04ee7298502f83053d911e92329c2fa90120f06a"
           }
+        },
+        {
+          "version": "1.4.0",
+          "publishTimestamp": 1793856587,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/Steve142536/dsh-subagent-bridge",
+            "commit": "9b0905835868ff54c6601fba8446738f20069ff1"
+          }
         }
       ]
     }
