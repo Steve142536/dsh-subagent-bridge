@@ -31,6 +31,7 @@ const SUMMARY_LIMIT = 120;        // list_tasks 任务文本摘要长度
 const WAIT_MIN_SECONDS = 10;      // wait_task 阻塞时长下限
 const WAIT_MAX_SECONDS = 600;     // wait_task 阻塞时长上限
 const WAIT_DEFAULT_SECONDS = 120; // wait_task 默认阻塞时长
+const QUEUE_MAX = 200;            // 排队任务上限：防止失控调用方无限入队爆内存
 const KILL_GRACE_MS = 5000;       // cancel_task 后 SIGTERM→SIGKILL 的宽限期；
                                   // 宽限到点仍不退出就强杀，保证 close 事件一定到来，
                                   // 并发槽才不会永久挂起
@@ -67,17 +68,26 @@ function readUserConfig() {
 function writeUserConfig(patchObj) {
   const next = { ...readUserConfig(), ...patchObj };
   fs.mkdirSync(path.dirname(configFilePath), { recursive: true });
-  fs.writeFileSync(configFilePath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  // 原子写：先写同目录临时文件再 rename，进程中途崩溃也不会留下半截 JSON
+  const tmpPath = `${configFilePath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  fs.renameSync(tmpPath, configFilePath);
   return next;
 }
 
-// "provider/model" → { provider, model }；空串/非法格式返回 null（跟随宿主默认）
+// "provider/model" → { provider, model }；空串/非法格式返回 null（跟随宿主默认）。
+// 两段都做字符白名单：值会被原样拼进 overlay 的 YAML（agent-default-model 行），
+// 换行/冒号/# 等字符可能破坏 YAML 结构甚至注入 patch 条目，必须挡在入口。
+const AGENT_MODEL_PART = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 function parseAgentModel(value) {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   const slash = trimmed.indexOf('/');
   if (slash <= 0 || slash === trimmed.length - 1) return null;
-  return { provider: trimmed.slice(0, slash), model: trimmed.slice(slash + 1) };
+  const provider = trimmed.slice(0, slash);
+  const model = trimmed.slice(slash + 1);
+  if (!AGENT_MODEL_PART.test(provider) || !AGENT_MODEL_PART.test(model)) return null;
+  return { provider, model };
 }
 
 // 从用户 patch 文本粗解析可用模型（llm-pi-ai providers 段的缩进约定：
@@ -124,7 +134,8 @@ function availableModels() {
 // 生成 headless overlay 文本：凭据恢复（headless 模板默认禁用，需显式打开）
 // + 宿主 desktop 用户层 patch 原文（提供商/模型/子代理配置随宿主走）
 // + 可选的 agent-default-model 覆盖（同 id 后写覆盖先写）。
-function buildOverlayText() {
+// modelOverride 是任务级覆盖（start_task 的 model 参数），优先于全局设置。
+function buildOverlayText(modelOverride) {
   const lines = [
     '# dsh-subagent-bridge generated headless overlay（自动生成，请勿手工编辑）',
     '- id: credentials',
@@ -140,7 +151,7 @@ function buildOverlayText() {
   } catch {
     // 用户 patch 不可读：仅凭据行，模型走 headless 模板默认
   }
-  const override = parseAgentModel(readUserConfig().agentModel);
+  const override = parseAgentModel(modelOverride) ?? parseAgentModel(readUserConfig().agentModel);
   if (override) {
     lines.push(
       "- id: agent-default-model",
@@ -154,9 +165,9 @@ function buildOverlayText() {
 }
 
 // 把 overlay 写进临时文件，返回路径；调用方在子进程退出后删除
-function writeTempOverlay() {
+function writeTempOverlay(modelOverride = null) {
   const tmp = path.join(os.tmpdir(), `dsh-subagent-bridge-${process.pid}-${randomBytes(4).toString('hex')}.yml`);
-  fs.writeFileSync(tmp, buildOverlayText(), 'utf8');
+  fs.writeFileSync(tmp, buildOverlayText(modelOverride), 'utf8');
   return tmp;
 }
 
@@ -186,6 +197,35 @@ function resolveLauncher() {
   return launcherCache;
 }
 
+// 终止任务的整棵进程树：Windows 上 child.kill() 只杀 headless 主进程，
+// 它派生的工具子进程（shell、构建脚本等）会变孤儿继续占用文件/端口。
+// 用 taskkill /T 递归终止整棵树：不带 /F 先温和请求，force 时 /F 强制。
+// 非 Windows 平台退回信号量 kill。
+function killTaskTree(child, force) {
+  if (!child) return;
+  const pid = typeof child.pid === 'number' ? child.pid : null;
+  if (pid === null || process.platform !== 'win32') {
+    try {
+      child.kill(force ? 'SIGKILL' : 'SIGTERM');
+    } catch {
+      // 进程可能已退出
+    }
+    return;
+  }
+  try {
+    spawn('taskkill', force ? ['/PID', String(pid), '/T', '/F'] : ['/PID', String(pid), '/T'], {
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+  } catch {
+    try {
+      child.kill(force ? 'SIGKILL' : undefined);
+    } catch {
+      // 进程可能已退出
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // MCP 工具定义（description 面向模型、英文、简洁准确；JSON Schema draft 风格）
 // ---------------------------------------------------------------------------
@@ -205,6 +245,18 @@ const TOOLS = [
         cwd: {
           type: 'string',
           description: 'Absolute working directory for the subagent; defaults to the DSH workspace root.',
+        },
+        timeoutSeconds: {
+          type: 'number',
+          description:
+            'Optional per-task timeout override in seconds (60-604800). Defaults to the bridge runtime limit configured in DSH settings.',
+          minimum: 60,
+          maximum: 604800,
+        },
+        model: {
+          type: 'string',
+          description:
+            'Optional model override for this task, formatted "provider/model" (e.g. "glm/glm-5.3-flash"). Defaults to the model configured in DSH settings.',
         },
       },
       required: ['task'],
@@ -445,10 +497,13 @@ export function apply(ctx, config) {
     }
   }
 
-  // webServer 监听是异步的：就绪前 getOrigin 拿不到端口。就绪轮询（每秒一次、
-  // 最多 60 秒），拿到端口立即同步一次 Codex 配置；失败不影响其他功能。
+  // webServer 监听是异步的：就绪前 getOrigin 拿不到端口。就绪轮询先每秒一次
+  // （最多 60 秒），拿到端口立即同步一次 Codex 配置；若 60 秒内始终没就绪，
+  // 不再永久放弃，而是降为每 30 秒重试一次（DSH 慢启动/休眠唤醒等场景下
+  // 迟早会就绪），成功后停止轮询。
   ctx.effect(() => {
     let tries = 0;
+    let slowTimer = null; // 降频重试定时器（卸载时一并清理）
     const timer = setInterval(() => {
       if (disposed) {
         clearInterval(timer);
@@ -464,12 +519,37 @@ export function apply(ctx, config) {
         clearInterval(timer);
         syncCodexConfig(origin);
       } else if (++tries >= 60) {
+        // 60 秒仍未就绪：转为每 30 秒重试，直到就绪或插件卸载
+        codexSync.status = 'pending';
+        codexSync.lastError = 'webServer origin not ready yet; retrying every 30s';
         clearInterval(timer);
-        codexSync.status = 'failed';
-        codexSync.lastError = 'webServer origin not ready within 60s';
+        slowTimer = setInterval(() => {
+          if (disposed) {
+            clearInterval(slowTimer);
+            slowTimer = null;
+            return;
+          }
+          let late = '';
+          try {
+            late = webServer.getOrigin();
+          } catch {
+            // 仍未就绪，30 秒后再试
+          }
+          if (late) {
+            clearInterval(slowTimer);
+            slowTimer = null;
+            syncCodexConfig(late);
+          }
+        }, 30000);
       }
     }, 1000);
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      if (slowTimer) {
+        clearInterval(slowTimer);
+        slowTimer = null;
+      }
+    };
   });
 
   // ---------- 任务存储与调度 ----------
@@ -514,6 +594,10 @@ export function apply(ctx, config) {
       cancelRequested: false, // 是否被 cancel_task 请求取消
       occupiesSlot: false,    // 是否正占用并发槽（释放以它为准，防漏防重）
       killTimer: null,  // 取消后的强杀兜底定时器（SIGTERM 宽限到点转 SIGKILL）
+      closeFallbackTimer: null, // exit 后 close 迟迟不来的兜底强终定时器
+      model: null,      // 任务级模型覆盖（"provider/model"；null = 全局配置）
+      timeoutSeconds: null, // 任务级超时覆盖（秒；null = 全局 limits）
+      progress: null,   // 最近一次 status 事件（{phase, turn, step, atMs}）
       pid: null,
       child: null,
       timer: null,      // 任务级超时定时器
@@ -541,6 +625,8 @@ export function apply(ctx, config) {
       sessionId: t.sessionId,
       answer: t.status === 'completed' ? t.answer : null,
       error: t.status === 'failed' || t.status === 'cancelled' ? t.error : null,
+      model: t.model,
+      progress: t.status === 'running' ? t.progress : null,
       pid: t.pid,
       elapsedMs: elapsedMs(t),
     };
@@ -554,6 +640,7 @@ export function apply(ctx, config) {
       sessionId: t.sessionId,
       elapsedMs: elapsedMs(t),
     };
+    if (t.status === 'running') payload.progress = t.progress; // 运行中可看轮次/步骤
     if (t.status === 'completed') payload.answer = t.answer;
     if (t.status === 'failed' || t.status === 'cancelled') payload.error = t.error;
     return payload;
@@ -661,9 +748,16 @@ export function apply(ctx, config) {
     // 直接 spawn Electron exe + ELECTRON_RUN_AS_NODE，等价官方 dsh.cmd 但绕开 cmd.exe 转义；
     // 中文目录等路径原样作为参数传入即可。终态判定统一放在 close 事件
     // （见下），exit 只负责资源清理。
-    // overlay 每次任务动态生成（读宿主 desktop 用户 patch + 可选模型覆盖），
-    // 写临时文件、子进程退出后删除。
-    const overlayFile = writeTempOverlay();
+    // overlay 每次任务动态生成（读宿主 desktop 用户 patch + 任务级/全局模型覆盖），
+    // 写临时文件、子进程退出后删除。写失败必须终止任务：running/occupiesSlot
+    // 已经置位，不收尾会永久占用并发槽。
+    let overlayFile;
+    try {
+      overlayFile = writeTempOverlay(t.model);
+    } catch (err) {
+      finishRunning(t, 'failed', { error: `failed to write headless overlay: ${err?.message ?? err}` });
+      return;
+    }
     let child;
     try {
       const spawnOptions = {
@@ -696,15 +790,14 @@ export function apply(ctx, config) {
     child.stdin.on('error', () => {});
     child.stdin.end(t.task);
 
-    // 任务级超时：到点杀进程；终态判定统一在 close 回调里做
+    // 任务级超时（t.timeoutSeconds 优先，否则全局 limits）：到点强杀整棵
+    // 进程树（child.kill() 在 Windows 上杀不掉孙进程，孤儿会一直占着 stdio
+    // 句柄导致 close 永不触发）；终态判定统一在 close 回调里做
+    const effectiveTimeoutSeconds = t.timeoutSeconds ?? limits.maxTaskSeconds;
     t.timer = setTimeout(() => {
       t.timedOut = true;
-      try {
-        child.kill();
-      } catch {
-        // 进程可能已退出
-      }
-    }, limits.maxTaskSeconds * 1000);
+      killTaskTree(child, true);
+    }, effectiveTimeoutSeconds * 1000);
 
     // stdout：--json 模式逐行输出 JSON 事件，坏行跳过
     const rl = readline.createInterface({ input: child.stdout });
@@ -724,6 +817,16 @@ export function apply(ctx, config) {
             : typeof event.id === 'string'
               ? event.id
               : t.sessionId;
+      } else if (event.type === 'status') {
+        // status 事件：agent 的轮次/步骤阶段计数（turn_start/step_start/
+        // step_end/turn_end）。透传给面板与 wait_task 快照，让调用方与
+        // 面板能区分"在推进"和"卡死"。
+        t.progress = {
+          phase: typeof event.phase === 'string' ? event.phase : null,
+          turn: Number.isFinite(event.turn) ? event.turn : null,
+          step: Number.isFinite(event.step) ? event.step : null,
+          atMs: Date.now(),
+        };
       } else if (event.type === 'final') {
         // final 事件带 text（最终答案，可能是空串）。
         // 只有 text 为非空字符串才算"有效 final"：退出码 0 但从未收到
@@ -748,12 +851,19 @@ export function apply(ctx, config) {
 
     // spawn 失败（如 ENOENT）：只有 error 事件，通常没有 exit
     child.on('error', (err) => {
+      try {
+        fs.unlinkSync(overlayFile); // 异步 spawn 失败时 exit 可能不触发，这里兜底删
+      } catch {
+        // 无妨
+      }
       finishRunning(t, 'failed', { error: `failed to run dsh: ${err?.message ?? err}` });
     });
 
     // 进程退出：只做资源清理。终态判定放在 close 事件——exit 触发时 stdout
     // 的缓冲可能还没读尽，最后的 'final' 事件行会因此丢失；close 保证 stdio
     // 流全部结束（stdout 数据已读完）后才触发。
+    // 兜底：若孙进程继承了 stdio 句柄且没被杀干净，close 可能迟迟不来——
+    // exit 后 15 秒仍无 close 就强制进入 failed 终态，绝不让任务永久 running。
     child.on('exit', () => {
       try {
         fs.unlinkSync(overlayFile); // 临时 overlay 用完即删
@@ -764,6 +874,16 @@ export function apply(ctx, config) {
         // 进程已退出，强杀兜底定时器不再需要
         clearTimeout(t.killTimer);
         t.killTimer = null;
+      }
+      if (!t.closeFallbackTimer) {
+        t.closeFallbackTimer = setTimeout(() => {
+          t.closeFallbackTimer = null;
+          if (t.status === 'running') {
+            finishRunning(t, 'failed', {
+              error: 'dsh process exited but its stdio streams never closed (orphaned child processes holding the pipes?); forcing terminal state',
+            });
+          }
+        }, 15000);
       }
     });
 
@@ -778,10 +898,14 @@ export function apply(ctx, config) {
         clearTimeout(t.killTimer);
         t.killTimer = null;
       }
+      if (t.closeFallbackTimer) {
+        clearTimeout(t.closeFallbackTimer);
+        t.closeFallbackTimer = null;
+      }
       if (t.timedOut) {
         finishRunning(t, 'failed', {
           error:
-            `task exceeded maxTaskSeconds (${limits.maxTaskSeconds}s)` +
+            `task exceeded timeout (${t.timeoutSeconds ?? limits.maxTaskSeconds}s)` +
             (t.stderrTail ? `; ${t.stderrTail}` : ''),
         });
       } else if (code === 0 && t.gotFinal && !t.eventError) {
@@ -849,7 +973,42 @@ export function apply(ctx, config) {
       }
       cwd = cwdInput;
     }
+    // 任务级超时覆盖（60-604800 秒）：不传或非法时回退全局 limits
+    let timeoutSeconds = null;
+    if (args?.timeoutSeconds !== undefined) {
+      timeoutSeconds = clampInt(args.timeoutSeconds, 0, 60, 604800);
+      if (!timeoutSeconds) {
+        return {
+          isError: true,
+          payload: { error: 'arguments.timeoutSeconds must be an integer between 60 and 604800' },
+        };
+      }
+    }
+    // 任务级模型覆盖："provider/model"，字符白名单防 YAML 注入
+    let model = null;
+    const modelInput = typeof args?.model === 'string' ? args.model.trim() : '';
+    if (modelInput) {
+      if (!parseAgentModel(modelInput)) {
+        return {
+          isError: true,
+          payload: {
+            error: `arguments.model must be "provider/model" using letters, digits, dot, underscore and dash only, got: ${modelInput}`,
+          },
+        };
+      }
+      model = modelInput;
+    }
+    // 队列上限：失控调用方（或死循环委托）最多排 200 个，超出明确报错，
+    // 避免无限入队把内存与调度拖垮
+    if (queue.length >= QUEUE_MAX) {
+      return {
+        isError: true,
+        payload: { error: `task queue is full (${QUEUE_MAX} pending tasks); wait for existing tasks to finish` },
+      };
+    }
     const t = createTask(task, cwd);
+    t.timeoutSeconds = timeoutSeconds;
+    t.model = model;
     queue.push(t.id);
     tryLaunch();
     return {
@@ -943,21 +1102,14 @@ export function apply(ctx, config) {
         payload: { taskId: t.id, status: t.status, note: 'queued task cancelled' },
       };
     }
-    // 运行中：杀子进程；Windows 上 kill() 即强终止，POSIX 上先发 SIGTERM，
-    // 若宽限期内仍未退出再补 SIGKILL，保证 close 事件最终一定到来
-    try {
-      t.child?.kill();
-    } catch {
-      // 进程可能已自行退出
-    }
+    // 运行中：杀整棵进程树（Windows 上 kill() 杀不掉孙进程，孤儿会一直
+    // 占着 stdio 句柄导致 close 永不触发）；先温和请求，宽限期内未退出
+    // 再强制终止，保证 close 事件最终一定到来
+    killTaskTree(t.child, false);
     if (t.killTimer) clearTimeout(t.killTimer);
     t.killTimer = setTimeout(() => {
       t.killTimer = null;
-      try {
-        t.child?.kill('SIGKILL');
-      } catch {
-        // 进程可能已退出
-      }
+      killTaskTree(t.child, true);
     }, KILL_GRACE_MS);
     finalize(t, 'cancelled', { error: 'cancelled by request' });
     return {
@@ -977,6 +1129,12 @@ export function apply(ctx, config) {
     const active = [...tasks.values()].find((task) =>
       task.resumeSessionId === previous.sessionId && (task.status === 'queued' || task.status === 'running'));
     if (active) return { isError: true, payload: { error: `session already has an active continuation: ${active.id}` } };
+    if (queue.length >= QUEUE_MAX) {
+      return {
+        isError: true,
+        payload: { error: `task queue is full (${QUEUE_MAX} pending tasks); wait for existing tasks to finish` },
+      };
+    }
     const next = createTask(message, previous.cwd, previous.sessionId);
     queue.push(next.id);
     tryLaunch();
@@ -1251,9 +1409,14 @@ export function apply(ctx, config) {
           Object.hasOwn(body, 'historyLimit')
         ) {
           // 与现有用户配置合并后统一 clamp，写入的值总是合法区间内的整数
+          const previous = limits;
           const merged = clampLimits({ ...readUserConfig(), ...body });
           Object.assign(patchObj, merged);
           limits = merged; // 热生效：调度/超时/历史裁剪立即用新值
+          // 调大并发上限：立即调度排队任务（否则要等下一次任务自然结束才启动）
+          if (merged.maxConcurrent > previous.maxConcurrent) tryLaunch();
+          // 调小历史条数：立即裁剪一次（否则要等下一个任务结束才裁）
+          if (merged.historyLimit < previous.historyLimit) trimHistory();
         }
         if (Object.keys(patchObj).length === 0) {
           sendJson(res, 400, { error: 'no recognized fields to save' });
@@ -1305,7 +1468,7 @@ export function apply(ctx, config) {
           continue;
         }
         try {
-          t.child?.kill(); // Windows 上 child.kill() 即可，不做更复杂的进程树处理
+          killTaskTree(t.child, true); // 停机强杀整棵进程树，不留孤儿
         } catch {
           // 进程可能已退出
         }

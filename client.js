@@ -25,7 +25,6 @@ window.__ModuleLoader__.load({
     const INFO_URL = '/mcp/dsh-subagent/info';
     const CONFIG_URL = '/mcp/dsh-subagent/config'; // 子代理模型配置读写（Host 路由）
     const POLL_INTERVAL_MS = 2500; // 轮询间隔
-    const MAX_HISTORY = 20;        // 主面板最多展示的最近已完成/失败任务数
 
     // 主题 token 均已核实（依据 @deepseek-ai/dsh-client-ui-theme 编译产物中的
     // ThemeRuntime.BUILTIN_INSPECT_TOKENS —— 它正是 client inspect Theme.listTokens
@@ -103,25 +102,22 @@ window.__ModuleLoader__.load({
     }
 
     /* ============================ 文案词典 ============================ */
-    // key 集合与 Host 侧 locale 文件约定一致（含暂无 UI 使用点的 unreachable，
-    // 保持两份词典对齐）；en 版为对应英文。
+    // 生效词典（唯一事实源）；locale/*.json 的 panel 节是它的参考副本，
+    // meta 节供插件管理页使用。
     const DICTS = {
       zh: {
         title: 'DSH 子代理',
         runningOne: '1 个子代理运行中',
         runningMany: '{count} 个子代理运行中',
-        idle: '没有运行中的子代理',
         empty: '暂无任务。从 Codex 通过 MCP 委托任务后，这里会显示进度。',
-        expand: '展开任务',
-        collapse: '收起任务',
+        loading: '正在连接桥接…',
         statusQueued: '排队中',
         statusRunning: '运行中',
         statusCompleted: '已完成',
         statusFailed: '失败',
         statusCancelled: '已取消',
+        progressText: '轮 {turn} · 步 {step}',
         connectTitle: '在 Codex 中把 DSH 当作子代理使用',
-        showGuide: '展开使用说明',
-        hideGuide: '收起使用说明',
         usageTitle: '如何使用',
         usageStep1: '① 接入 Codex：把下面的提示词发给 DSH 助手，它会完成 MCP 注册，并把使用规则写进 Codex 系统提示词（~/.codex/AGENTS.md）。',
         usageStep2: '② 新开 Codex 会话直接说需求：所有任务由 DSH 子代理执行，Codex 主代理负责拆解、检查和验收。',
@@ -163,24 +159,23 @@ window.__ModuleLoader__.load({
         limitTaskSeconds: '单任务超时（秒）',
         limitHistory: '历史任务保留条数',
         limitsHint: '保存后立即生效（无需重启 DSH）。超出并发上限的任务排队等待；超时到点的任务判为失败。',
+        limitsInvalidEmpty: '输入不能为空',
+        limitsInvalidRange: '需为 {min}-{max} 之间的整数',
         unreachable: '桥接不可用',
       },
       en: {
         title: 'DSH Subagents',
         runningOne: '1 subagent running',
         runningMany: '{count} subagents running',
-        idle: 'No running subagents',
         empty: 'No tasks yet. Delegate tasks from Codex via MCP and progress will show up here.',
-        expand: 'Show tasks',
-        collapse: 'Hide tasks',
+        loading: 'Connecting to the bridge…',
         statusQueued: 'Queued',
         statusRunning: 'Running',
         statusCompleted: 'Completed',
         statusFailed: 'Failed',
         statusCancelled: 'Cancelled',
+        progressText: 'turn {turn} · step {step}',
         connectTitle: 'Use DSH as a subagent in Codex',
-        showGuide: 'Show usage guide',
-        hideGuide: 'Hide usage guide',
         usageTitle: 'How to use',
         usageStep1: '1. Connect Codex: send the prompt below to the DSH assistant; it registers the MCP server and adds the usage rules to the Codex instructions (~/.codex/AGENTS.md).',
         usageStep2: '2. Open a new Codex session and state your task: all tasks run via DSH subagents while the Codex main agent decomposes, checks, and accepts.',
@@ -222,6 +217,8 @@ window.__ModuleLoader__.load({
         limitTaskSeconds: 'Per-task timeout (seconds)',
         limitHistory: 'History entries kept',
         limitsHint: 'Saved changes take effect immediately (no DSH restart needed). Tasks above the concurrency cap queue up; tasks past the timeout fail.',
+        limitsInvalidEmpty: 'Input cannot be empty',
+        limitsInvalidRange: 'Must be an integer between {min} and {max}',
         unreachable: 'Bridge unavailable',
       },
     };
@@ -314,6 +311,8 @@ window.__ModuleLoader__.load({
       '.dsh-subagent-bridge-badge{display:inline-flex;align-items:center;gap:4px;font-size:11px}',
       '.dsh-subagent-bridge-badge-dot{width:6px;height:6px;border-radius:50%;flex:none}',
       '.dsh-subagent-bridge-duration{margin-left:auto;flex:none;font-size:11px;opacity:.85;font-variant-numeric:tabular-nums}',
+      // 运行中卡片的轮次/步骤徽标（来自 Host 透传的 status 事件）
+      '.dsh-subagent-bridge-progress{font-size:11px;color:var(--dsw-alias-brand-primary)}',
       '.dsh-subagent-bridge-task-text{color:var(--dsw-alias-label-primary);overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word}',
       // 展开箭头：跟在耗时后面，提示整卡可点
       '.dsh-subagent-bridge-chevron{flex:none;font-size:10px;opacity:.6}',
@@ -382,6 +381,11 @@ window.__ModuleLoader__.load({
             }),
             t(statusTextKey(status)),
           ),
+          // 运行中且 Host 透传了 status 事件：显示 agent 轮次/步骤，可分辨"在推进"与"卡死"
+          status === 'running' && task.progress && task.progress.turn != null
+            ? h('span', { className: 'dsh-subagent-bridge-progress' },
+                t('progressText', { turn: task.progress.turn, step: task.progress.step ?? '–' }))
+            : null,
           h('span', { className: 'dsh-subagent-bridge-duration' }, formatDuration(task.elapsedMs)),
           h('span', { 'aria-hidden': true, className: 'dsh-subagent-bridge-chevron' }, open ? '▾' : '▸'),
         ),
@@ -477,9 +481,11 @@ window.__ModuleLoader__.load({
       const [syncState, setSyncState] = React.useState(null);
       const [copyStates, setCopyStates] = React.useState({ cmd: 'copy', prompt: 'copy' });
       const timerRef = React.useRef({});
+      const aliveRef = React.useRef(true); // 异步回调的卸载保护
 
       React.useEffect(function () {
         let alive = true;
+        aliveRef.current = true;
         const controller = new AbortController();
         fetch(INFO_URL, { signal: controller.signal })
           .then(function (res) {
@@ -498,6 +504,7 @@ window.__ModuleLoader__.load({
           .catch(function () { /* info 拿不到就只显示说明文字，保持安静 */ });
         return function () {
           alive = false;
+          aliveRef.current = false;
           controller.abort();
           Object.keys(timerRef.current).forEach(function (key) {
             if (timerRef.current[key]) clearTimeout(timerRef.current[key]);
@@ -507,7 +514,8 @@ window.__ModuleLoader__.load({
       }, []);
 
       const command = mcpUrl ? 'codex mcp add dsh-subagent --url ' + mcpUrl : '';
-      const prompt = mcpUrl ? interpolate(safeText(t('installPrompt')), { url: mcpUrl }) : '';
+      // 显式把 url 传给 t：不依赖宿主 t 对"未提供参数的占位符"的缺省行为
+      const prompt = mcpUrl ? safeText(t('installPrompt', { url: mcpUrl })) : '';
 
       function setCopyState(which, value) {
         setCopyStates(function (prev) {
@@ -524,12 +532,15 @@ window.__ModuleLoader__.load({
           return;
         }
         clipboard.writeText(text).then(function () {
+          if (!aliveRef.current) return; // 已卸载：不再 setState、不再挂回弹定时器
           setCopyState(which, 'copied');
           if (timerRef.current[which]) clearTimeout(timerRef.current[which]);
           timerRef.current[which] = setTimeout(function () {
+            if (!aliveRef.current) return;
             setCopyState(which, 'copy');
           }, 2000);
         }, function () {
+          if (!aliveRef.current) return;
           setCopyState(which, 'copyFailed');
         });
       }
@@ -576,7 +587,7 @@ window.__ModuleLoader__.load({
           updated: t('syncUpdated'),
           unchanged: t('syncUnchanged'),
           skipped: t('syncSkipped'),
-          failed: t('syncFailed') + (syncState.lastError ? '：' + syncState.lastError : ''),
+          failed: t('syncFailed') + (syncState.lastError ? '：' + safeText(syncState.lastError) : ''),
           pending: t('syncPending'),
         };
         body.push(h('div', {
@@ -592,7 +603,9 @@ window.__ModuleLoader__.load({
     // 数据通道失败时保留诊断信息（origin + 错误），面板绝不静默消失——
     // 否则无法区分"没渲染"和"没数据"。
     function useBridgeTasks() {
-      const [state, setState] = React.useState({ reachable: false, tasks: null, error: null });
+      // reachable 三态：true 可用 / false 首次请求已失败 / null 尚在首次请求。
+      // 首帧不能渲染成"桥接不可用"——那只是还没请求完。
+      const [state, setState] = React.useState({ reachable: null, tasks: null, error: null });
 
       React.useEffect(function () {
         let alive = true;
@@ -600,8 +613,10 @@ window.__ModuleLoader__.load({
         const poll = function () {
           // 页面不可见时不请求，省流量；恢复可见时立即补一次。
           if (document.visibilityState !== 'visible') return;
-          controller = new AbortController();
-          fetch(TASKS_URL, { signal: controller.signal })
+          // 局部引用：慢请求被下一轮覆盖时，本请求的 abort 判定不受影响
+          const ctl = new AbortController();
+          controller = ctl;
+          fetch(TASKS_URL, { signal: ctl.signal })
             .then(function (res) {
               if (!res.ok) throw new Error('HTTP ' + res.status);
               return res.json();
@@ -612,8 +627,8 @@ window.__ModuleLoader__.load({
               setState({ reachable: true, tasks: tasks, error: null });
             })
             .catch(function (err) {
-              // 卸载引发的 abort 不改变状态；真实失败时保留诊断信息用于面板展示
-              if (alive && !(controller && controller.signal.aborted)) {
+              // 卸载/被新请求取代引发的 abort 不改变状态；真实失败保留诊断信息
+              if (alive && !ctl.signal.aborted) {
                 setState({
                   reachable: false,
                   tasks: null,
@@ -642,6 +657,11 @@ window.__ModuleLoader__.load({
     // 任务列表渲染（诊断 / 运行中 / 最近历史 / 空态 + 指引），供主面板使用。
     function taskListChildren(state, t) {
       const children = [];
+      if (state.reachable === null) {
+        // 首次请求尚未返回：显示加载中，而不是误报"桥接不可用"
+        children.push(h('div', { key: 'loading', className: 'dsh-subagent-bridge-empty' }, t('loading')));
+        return children;
+      }
       if (!state.reachable) {
         children.push(h('div', { key: 'unreachable', className: 'dsh-subagent-bridge-empty' },
           t('unreachable'),
@@ -660,7 +680,9 @@ window.__ModuleLoader__.load({
       const history = tasks.filter(function (task) {
         const status = safeText(task.status);
         return status === 'completed' || status === 'failed' || status === 'cancelled';
-      }).slice(0, MAX_HISTORY);
+      });
+      // 不再做前端截断：Host 已按设置页的 historyLimit 截断返回，
+      // 这里再截会让"历史任务保留条数"设置在面板上失真。
 
       // key 优先用任务 id；id 缺失时用索引兜底，避免 React 的 key 警告。
       running.forEach(function (task, index) {
@@ -743,9 +765,11 @@ window.__ModuleLoader__.load({
       const [saveState, setSaveState] = React.useState('idle'); // idle | saving | saved | error
       const [manualText, setManualText] = React.useState('');
       const timerRef = React.useRef(null);
+      const aliveRef = React.useRef(true); // 异步回调的卸载保护
 
       React.useEffect(function () {
         let alive = true;
+        aliveRef.current = true;
         const controller = new AbortController();
         fetch(CONFIG_URL, { signal: controller.signal })
           .then(function (res) {
@@ -760,6 +784,7 @@ window.__ModuleLoader__.load({
           .catch(function () { /* 拿不到配置也渲染表单（错误态可重试） */ });
         return function () {
           alive = false;
+          aliveRef.current = false;
           controller.abort();
           if (timerRef.current) {
             clearTimeout(timerRef.current);
@@ -777,12 +802,24 @@ window.__ModuleLoader__.load({
         })
           .then(function (res) {
             if (!res.ok) throw new Error('HTTP ' + res.status);
-            setAgentModel(value);
+            return res.json();
+          })
+          .then(function (data) {
+            // 响应回填：快速连续切换 select 时慢的旧响应后到，若回填请求
+            // 发起时的 value 会让界面与实际存储相反；Host 返回的是真正落盘值
+            if (!aliveRef.current) return;
+            setAgentModel(data && typeof data.agentModel === 'string' ? data.agentModel : '');
             setSaveState('saved');
             if (timerRef.current) clearTimeout(timerRef.current);
-            timerRef.current = setTimeout(function () { setSaveState('idle'); }, 2000);
+            timerRef.current = setTimeout(function () {
+              if (!aliveRef.current) return;
+              setSaveState('idle');
+            }, 2000);
           })
-          .catch(function () { setSaveState('error'); });
+          .catch(function () {
+            if (!aliveRef.current) return;
+            setSaveState('error');
+          });
       }
 
       const knownValues = [];
@@ -807,6 +844,7 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'dsh-subagent-bridge-cfg-row' },
               h('select', {
                 className: 'dsh-subagent-bridge-cfg-input',
+                'aria-label': t('configTitle'),
                 value: agentModel,
                 onChange: function (event) { save(event.target.value); },
               },
@@ -820,6 +858,7 @@ window.__ModuleLoader__.load({
               h('input', {
                 className: 'dsh-subagent-bridge-cfg-input',
                 placeholder: t('configPlaceholder'),
+                'aria-label': t('configTitle'),
                 value: manualText || agentModel,
                 onChange: function (event) { setManualText(event.target.value); },
               }),
@@ -833,15 +872,26 @@ window.__ModuleLoader__.load({
 
     // 运行限额卡：并发上限 / 单任务超时 / 历史条数。保存后 Host 热生效
     //（调度、超时、历史裁剪立即使用新值，无需重启 DSH）。
+    // 字段定义与 Host clampLimits 一致（index.js）：并发 1-64、超时 60-604800 秒、
+    // 历史 10-1000 条。前端先做同样的区间校验，非法值当场提示而不是保存后
+    // 被 Host 静默钳制成别的数字。
+    const LIMIT_RANGES = {
+      maxConcurrent: { min: 1, max: 64 },
+      maxTaskSeconds: { min: 60, max: 604800 },
+      historyLimit: { min: 10, max: 1000 },
+    };
+
     function LimitsConfig() {
       const t = localeApi.t;
       useStoreOrNoop(localeApi.subscribe || noopSubscribe, localeApi.getSnapshot || nullSnapshot);
       const [values, setValues] = React.useState({ maxConcurrent: '', maxTaskSeconds: '', historyLimit: '' });
       const [saveState, setSaveState] = React.useState('idle');
       const timerRef = React.useRef(null);
+      const aliveRef = React.useRef(true); // 异步回调的卸载保护
 
       React.useEffect(function () {
         let alive = true;
+        aliveRef.current = true;
         const controller = new AbortController();
         fetch(CONFIG_URL, { signal: controller.signal })
           .then(function (res) {
@@ -859,6 +909,7 @@ window.__ModuleLoader__.load({
           .catch(function () { /* 拿不到现值就保持空输入，用户可手填 */ });
         return function () {
           alive = false;
+          aliveRef.current = false;
           controller.abort();
           if (timerRef.current) {
             clearTimeout(timerRef.current);
@@ -867,28 +918,40 @@ window.__ModuleLoader__.load({
         };
       }, []);
 
-      const numbers = {
-        maxConcurrent: Number(values.maxConcurrent),
-        maxTaskSeconds: Number(values.maxTaskSeconds),
-        historyLimit: Number(values.historyLimit),
-      };
-      const valid = ['maxConcurrent', 'maxTaskSeconds', 'historyLimit'].every(function (key) {
-        return values[key] !== '' && Number.isFinite(numbers[key]);
-      });
+      // 校验：非空 + 整数 + 在字段区间内。返回首个错误的提示文案或 null。
+      function invalidReason(next) {
+        for (const key of Object.keys(LIMIT_RANGES)) {
+          const text = String(next[key] ?? '').trim();
+          if (text === '') return t('limitsInvalidEmpty');
+          const n = Number(text);
+          if (!Number.isInteger(n) || n < LIMIT_RANGES[key].min || n > LIMIT_RANGES[key].max) {
+            return t('limitsInvalidRange', { min: LIMIT_RANGES[key].min, max: LIMIT_RANGES[key].max });
+          }
+        }
+        return null;
+      }
 
       function save() {
+        if (invalidReason(values)) return;
+        const submitted = { ...values }; // 快照：响应回来时用于判断用户是否又改过
         setSaveState('saving');
         fetch(CONFIG_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(numbers),
+          body: JSON.stringify({
+            maxConcurrent: Number(values.maxConcurrent),
+            maxTaskSeconds: Number(values.maxTaskSeconds),
+            historyLimit: Number(values.historyLimit),
+          }),
         })
           .then(function (res) {
             if (!res.ok) throw new Error('HTTP ' + res.status);
             return res.json();
           })
           .then(function (data) {
-            if (data && data.limits) {
+            if (!aliveRef.current) return;
+            // 响应回填钳制后的真实落盘值；但用户在等待期间又改了输入就不覆盖
+            if (data && data.limits && valuesMatch(values, submitted)) {
               setValues({
                 maxConcurrent: String(data.limits.maxConcurrent),
                 maxTaskSeconds: String(data.limits.maxTaskSeconds),
@@ -897,9 +960,21 @@ window.__ModuleLoader__.load({
             }
             setSaveState('saved');
             if (timerRef.current) clearTimeout(timerRef.current);
-            timerRef.current = setTimeout(function () { setSaveState('idle'); }, 2000);
+            timerRef.current = setTimeout(function () {
+              if (!aliveRef.current) return;
+              setSaveState('idle');
+            }, 2000);
           })
-          .catch(function () { setSaveState('error'); });
+          .catch(function () {
+            if (!aliveRef.current) return;
+            setSaveState('error');
+          });
+      }
+
+      function valuesMatch(a, b) {
+        return Object.keys(LIMIT_RANGES).every(function (key) {
+          return String(a[key]) === String(b[key]);
+        });
       }
 
       function field(key, label) {
@@ -907,7 +982,9 @@ window.__ModuleLoader__.load({
           h('span', { className: 'dsh-subagent-bridge-limits-label' }, label),
           h('input', {
             type: 'number',
-            min: 1,
+            min: LIMIT_RANGES[key].min,
+            max: LIMIT_RANGES[key].max,
+            step: 1,
             className: 'dsh-subagent-bridge-cfg-input dsh-subagent-bridge-limits-input',
             value: values[key],
             onChange: function (event) {
@@ -918,6 +995,7 @@ window.__ModuleLoader__.load({
         );
       }
 
+      const invalidText = invalidReason(values);
       return h('div', { className: 'dsh-subagent-bridge-cfg' },
         h('div', { className: 'dsh-subagent-bridge-cfg-title' }, t('limitsTitle')),
         field('maxConcurrent', t('limitConcurrent')),
@@ -927,12 +1005,15 @@ window.__ModuleLoader__.load({
           h('button', {
             type: 'button',
             className: 'dsh-subagent-bridge-copy',
-            disabled: !valid || saveState === 'saving',
+            disabled: Boolean(invalidText) || saveState === 'saving',
             onClick: save,
           }, saveState === 'saving' ? '…' : t('configSave')),
           saveState === 'saved' ? h('span', { className: 'dsh-subagent-bridge-cfg-saved' }, t('configSaved')) : null,
           saveState === 'error' ? h('span', { className: 'dsh-subagent-bridge-cfg-hint dsh-subagent-bridge-detail-failed' }, t('configError')) : null,
         ),
+        invalidText && saveState !== 'saving'
+          ? h('div', { className: 'dsh-subagent-bridge-cfg-hint dsh-subagent-bridge-detail-failed' }, invalidText)
+          : null,
         h('div', { className: 'dsh-subagent-bridge-cfg-hint' }, t('limitsHint')),
       );
     }

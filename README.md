@@ -100,4 +100,4 @@ DSH 设置对话框 →"DSH 子代理"分区，保存到 `~/.dsh/subagent-bridge
 - `client.js`：Client 侧 Web 面板，显示运行中的子代理。
 - `cordis.patch.yml`：bundle 补丁，声明 Host 插件行与默认配置（Client 面板由 package.json 的 `dsh.client` 段自动发现，无需单独插件行）。
 - `headless-credentials.patch.yml`：headless 桥接 overlay（恢复凭据 + 用户提供商配置 + 默认模型），spawn 时经 launcher 的 `--patch` 传入。
-- `locale/*.json`、`icon.svg`：面板文案与图标。
+- `locale/*.json`：`meta` 节供插件管理页展示标题与描述；`panel` 节是 `client.js` 内嵌词典的参考副本（**实际生效的文案在 `client.js` 的 DICTS**，改文案请改 DICTS 并同步副本）。`icon.svg` 为插件图标。
